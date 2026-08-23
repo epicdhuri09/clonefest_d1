@@ -1,26 +1,36 @@
 import { useState } from "react";
 import "./App.css";
+import { detectSecrets } from "./services/secretDetector";
+import { analyzeRisk } from "./services/riskEngine";
+import type { RiskAnalysis } from "./services/riskEngine";
 
 function App() {
   const [secret, setSecret] = useState("");
-  const [analyzed, setAnalyzed] = useState(false);
+  const [analysis, setAnalysis] = useState<RiskAnalysis | null>(null);
 
   const handleAnalyze = () => {
-    setAnalyzed(true);
+    const detectedSecrets = detectSecrets(secret);
+    const result = analyzeRisk(detectedSecrets);
+
+    setAnalysis(result);
+  };
+
+  const getRiskClass = (level: string) => {
+    return `risk-${level.toLowerCase()}`;
   };
 
   return (
     <main className="app">
       <div className="container">
         <header className="header">
-          <div>
-            <p className="eyebrow">ADAPTIVE SECRET LIFECYCLE</p>
-            <h1>Securely share sensitive information.</h1>
-            <p className="subtitle">
-              Analyze your content before sharing it and determine the level
-              of protection it needs.
-            </p>
-          </div>
+          <p className="eyebrow">ADAPTIVE SECRET LIFECYCLE</p>
+
+          <h1>Securely share sensitive information.</h1>
+
+          <p className="subtitle">
+            Analyze your content before sharing it and determine the level of
+            protection it needs.
+          </p>
         </header>
 
         <section className="card">
@@ -36,9 +46,12 @@ function App() {
             value={secret}
             onChange={(event) => {
               setSecret(event.target.value);
-              setAnalyzed(false);
+              setAnalysis(null);
             }}
-            placeholder={`Example:\nDB_HOST=production.company.com\nDB_USER=admin\nDB_PASSWORD=your-password`}
+            placeholder={`Example:
+DB_HOST=production.company.com
+DB_USER=admin
+DB_PASSWORD=your-password`}
             rows={10}
           />
 
@@ -53,31 +66,73 @@ function App() {
           </div>
         </section>
 
-        {analyzed && (
+        {analysis && (
           <section className="card result-card">
             <div className="card-header">
               <h2>Security Analysis</h2>
-              <span className="risk-badge">PENDING ENGINE</span>
-            </div>
 
-            <p className="result-placeholder">
-              Secret detection and compound risk scoring will appear here.
-            </p>
+              <span className={`risk-badge ${getRiskClass(analysis.level)}`}>
+                {analysis.level}
+              </span>
+            </div>
 
             <div className="placeholder-grid">
               <div>
                 <span>Detected Secrets</span>
-                <strong>—</strong>
+                <strong>{analysis.detectedSecrets.length}</strong>
               </div>
 
               <div>
                 <span>Risk Score</span>
-                <strong>—</strong>
+                <strong>{analysis.score}/100</strong>
               </div>
 
               <div>
                 <span>Risk Level</span>
-                <strong>—</strong>
+                <strong>{analysis.level}</strong>
+              </div>
+            </div>
+
+            <div className="analysis-section">
+              <h3>Detected Content</h3>
+
+              {analysis.detectedSecrets.length === 0 ? (
+                <p className="result-placeholder">
+                  No obvious sensitive secrets were detected.
+                </p>
+              ) : (
+                <div className="detected-list">
+                  {analysis.detectedSecrets.map((secretItem, index) => (
+                    <div className="detected-item" key={`${secretItem.type}-${index}`}>
+                      <div>
+                        <strong>{secretItem.label}</strong>
+                        <span>
+                          Confidence:{" "}
+                          {Math.round(secretItem.confidence * 100)}%
+                        </span>
+                      </div>
+
+                      <span
+                        className={`severity severity-${secretItem.severity}`}
+                      >
+                        {secretItem.severity.toUpperCase()}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="analysis-section">
+              <h3>Security Recommendations</h3>
+
+              <div className="recommendations">
+                {analysis.recommendations.map((recommendation) => (
+                  <div className="recommendation" key={recommendation}>
+                    <span>✓</span>
+                    <p>{recommendation}</p>
+                  </div>
+                ))}
               </div>
             </div>
           </section>
