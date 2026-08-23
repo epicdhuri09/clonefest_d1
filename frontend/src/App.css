@@ -330,6 +330,90 @@ button:disabled {
   line-height: 1.5;
 }
 
+.share-section {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  margin-top: 32px;
+  padding-top: 28px;
+  border-top: 1px solid #222b36;
+}
+
+.share-section h3 {
+  margin: 0 0 8px;
+  color: #d8dee7;
+  font-size: 1rem;
+}
+
+.share-section p {
+  max-width: 540px;
+  margin: 0;
+  color: #7f8c9d;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.share-button {
+  flex-shrink: 0;
+}
+
+.encryption-error {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px solid #73333b;
+  border-radius: 12px;
+  background: rgba(115, 51, 59, 0.1);
+  color: #ff8d99;
+  font-size: 0.85rem;
+}
+
+.encryption-success {
+  margin-top: 20px;
+  padding: 18px;
+  border: 1px solid #315c3a;
+  border-radius: 14px;
+  background: rgba(49, 92, 58, 0.08);
+}
+
+.success-header {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: #8bd49a;
+}
+
+.encryption-success > p {
+  margin: 8px 0 16px;
+  color: #9aa7b8;
+  font-size: 0.85rem;
+}
+
+.encrypted-preview {
+  padding: 12px;
+  border: 1px solid #222b36;
+  border-radius: 10px;
+  background: #0b1017;
+}
+
+.encrypted-preview span {
+  display: block;
+  margin-bottom: 6px;
+  color: #7f8c9d;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.encrypted-preview code {
+  display: block;
+  overflow: hidden;
+  color: #c7d0dc;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  word-break: break-all;
+}
+
 @keyframes fadeIn {
   from {
     opacity: 0;
@@ -367,5 +451,14 @@ button:disabled {
 
   .severity {
     align-self: flex-start;
+  }
+
+  .share-section {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .share-button {
+    width: 100%;
   }
 }
