@@ -1,70 +1,52 @@
 import cors from "cors";
 import express from "express";
 import crypto from "node:crypto";
+
 import {
   createShare,
   getShare,
   updateShare,
+  incrementShareViews,
 } from "./store.js";
 
 const app = express();
 
 const PORT = 4000;
 
-/*
- * Allow the frontend during local development.
- *
- * Vite can run on either 5173 or 5174 depending on
- * what port is available.
- */
+// --------------------------------------------------
+// CORS
+// --------------------------------------------------
+
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:5174",
-  "http://127.0.0.1:5173",
-  "http://127.0.0.1:5174",
 ];
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests that don't have an Origin header
-      // (for example direct browser/API testing).
       if (!origin) {
-        callback(null, true);
-        return;
+        return callback(null, true);
       }
 
       if (allowedOrigins.includes(origin)) {
-        callback(null, true);
-        return;
+        return callback(null, true);
       }
 
-      callback(new Error(`CORS blocked origin: ${origin}`));
+      return callback(
+        new Error("Origin not allowed"),
+      );
     },
-    methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type"],
   }),
 );
 
 app.use(express.json());
 
-/*
- * Simple request logger.
- *
- * This lets us see in the backend terminal when
- * the frontend actually reaches the backend.
- */
-app.use((req, _res, next) => {
-  console.log(
-    `[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`,
-  );
 
-  next();
-});
+// --------------------------------------------------
+// HEALTH CHECK
+// --------------------------------------------------
 
-/*
- * Health check
- */
 app.get("/api/health", (_req, res) => {
   res.json({
     status: "ok",
@@ -72,187 +54,234 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
-/*
- * Create a secure share
- *
- * The backend receives:
- * - ciphertext
- * - IV
- * - expiration
- * - maximum views
- * - risk level
- *
- * IMPORTANT:
- * The encryption key is NEVER sent to the backend.
- */
+
+// --------------------------------------------------
+// CREATE SHARE
+// --------------------------------------------------
+
 app.post("/api/shares", (req, res) => {
-  try {
-    const {
-      ciphertext,
-      iv,
-      expiresInMinutes = 10,
-      maxViews = 1,
-      riskLevel = "LOW",
-    } = req.body;
+  const {
+    ciphertext,
+    iv,
+    expiresInSeconds = 600,
+    maxViews = 1,
+    riskLevel = "LOW",
+  } = req.body;
 
-    console.log("Creating secure share...");
+  // ----------------------------------------------
+  // Validate encrypted data
+  // ----------------------------------------------
 
-    /*
-     * Validate encrypted data
-     */
-    if (
-      typeof ciphertext !== "string" ||
-      !ciphertext.trim() ||
-      typeof iv !== "string" ||
-      !iv.trim()
-    ) {
-      return res.status(400).json({
-        error: "ciphertext and iv are required",
-      });
-    }
-
-    /*
-     * Validate risk level
-     */
-    const allowedRiskLevels = [
-      "LOW",
-      "MEDIUM",
-      "HIGH",
-      "CRITICAL",
-    ] as const;
-
-    if (!allowedRiskLevels.includes(riskLevel)) {
-      return res.status(400).json({
-        error: "Invalid risk level",
-      });
-    }
-
-    /*
-     * Validate expiration
-     */
-    if (
-      typeof expiresInMinutes !== "number" ||
-      !Number.isFinite(expiresInMinutes) ||
-      expiresInMinutes <= 0
-    ) {
-      return res.status(400).json({
-        error: "Invalid expiration time",
-      });
-    }
-
-    /*
-     * Validate maximum views
-     */
-    if (
-      typeof maxViews !== "number" ||
-      !Number.isInteger(maxViews) ||
-      maxViews <= 0
-    ) {
-      return res.status(400).json({
-        error: "Invalid view limit",
-      });
-    }
-
-    /*
-     * Generate unique share ID
-     */
-    const id = crypto.randomUUID();
-
-    const createdAt = new Date();
-
-    const expiresAt = new Date(
-      createdAt.getTime() +
-        expiresInMinutes * 60 * 1000,
-    );
-
-    /*
-     * Store the encrypted payload.
-     *
-     * Notice that there is NO encryption key here.
-     */
-    createShare({
-      id,
-      ciphertext,
-      iv,
-      createdAt: createdAt.toISOString(),
-      expiresAt: expiresAt.toISOString(),
-      maxViews,
-      views: 0,
-      burned: false,
-      riskLevel,
-    });
-
-    console.log(`Share created: ${id}`);
-
-    return res.status(201).json({
-      id,
-      expiresAt: expiresAt.toISOString(),
-      maxViews,
-    });
-  } catch (error) {
-    console.error("Create share error:", error);
-
-    return res.status(500).json({
-      error: "Failed to create secure share",
+  if (!ciphertext || !iv) {
+    return res.status(400).json({
+      error: "ciphertext and iv are required",
     });
   }
-});
 
-/*
- * Retrieve a secure share
- *
- * Every successful retrieval counts as ONE view.
- */
-app.get("/api/shares/:id", (req, res) => {
-  try {
-    const { id } = req.params;
+  // ----------------------------------------------
+  // Validate risk level
+  // ----------------------------------------------
 
-    console.log(`Retrieving share: ${id}`);
+  const allowedRiskLevels = [
+    "LOW",
+    "MEDIUM",
+    "HIGH",
+    "CRITICAL",
+  ] as const;
 
-    const share = getShare(id);
+  if (!allowedRiskLevels.includes(riskLevel)) {
+    return res.status(400).json({
+      error: "Invalid risk level",
+    });
+  }
+
+  // ----------------------------------------------
+  // Validate exact expiration
+  // ----------------------------------------------
+
+  if (
+    !Number.isInteger(expiresInSeconds) ||
+    expiresInSeconds <= 0
+  ) {
+    return res.status(400).json({
+      error:
+        "Expiration must be a positive number of seconds",
+    });
+  }
+
+  // Maximum allowed lifetime: 365 days
+
+  const MAX_EXPIRATION_SECONDS =
+    365 * 24 * 60 * 60;
+
+  if (
+    expiresInSeconds >
+    MAX_EXPIRATION_SECONDS
+  ) {
+    return res.status(400).json({
+      error:
+        "Expiration cannot exceed 365 days",
+    });
+  }
+
+  // ----------------------------------------------
+  // Validate view count
+  // ----------------------------------------------
+
+  if (
+    !Number.isInteger(maxViews) ||
+    maxViews <= 0
+  ) {
+    return res.status(400).json({
+      error:
+        "Maximum views must be a positive integer",
+    });
+  }
+
+  if (maxViews > 10000) {
+    return res.status(400).json({
+      error:
+        "Maximum views cannot exceed 10,000",
+    });
+  }
+
+  // ----------------------------------------------
+  // Generate IDs
+  // ----------------------------------------------
+
+  const id = crypto.randomUUID();
+
+  /*
+   * Separate authorization token for the
+   * creator's kill switch.
+   *
+   * This token is NEVER included in the
+   * recipient's share URL.
+   */
+  const burnToken = crypto
+    .randomBytes(32)
+    .toString("hex");
+
+  // ----------------------------------------------
+  // Calculate expiration
+  // ----------------------------------------------
+
+  const createdAt = new Date();
+
+  const expiresAt = new Date(
+    createdAt.getTime() +
+      expiresInSeconds * 1000,
+  );
+
+  // ----------------------------------------------
+  // Store share
+  // ----------------------------------------------
+
+  createShare({
+    id,
+
+    ciphertext,
+    iv,
+
+    createdAt: createdAt.toISOString(),
+    expiresAt: expiresAt.toISOString(),
+
+    maxViews,
+    views: 0,
+
+    burned: false,
+
+    burnToken,
+
+    riskLevel,
+  });
+
+  // ----------------------------------------------
+  // Return creator information
+  // ----------------------------------------------
+
+  return res.status(201).json({
+    id,
+
+    expiresAt:
+      expiresAt.toISOString(),
+
+    maxViews,
 
     /*
-     * Share doesn't exist
+     * Returned only to the creator.
      */
+    burnToken,
+  });
+});
+
+
+// --------------------------------------------------
+// RETRIEVE SHARE
+// --------------------------------------------------
+
+app.get(
+  "/api/shares/:id",
+  (req, res) => {
+    const share = getShare(
+      req.params.id,
+    );
+
+    // --------------------------------------------
+    // Not found
+    // --------------------------------------------
+
     if (!share) {
       return res.status(404).json({
         error: "Share not found",
       });
     }
 
-    /*
-     * Share was manually burned
-     */
+    // --------------------------------------------
+    // Kill switch
+    // --------------------------------------------
+
     if (share.burned) {
       return res.status(410).json({
-        error: "Share has been burned",
+        error:
+          "Share has been permanently disabled",
       });
     }
 
-    /*
-     * Share expired
-     */
-    if (new Date() >= new Date(share.expiresAt)) {
+    // --------------------------------------------
+    // Expiration
+    // --------------------------------------------
+
+    if (
+      new Date() >=
+      new Date(share.expiresAt)
+    ) {
       return res.status(410).json({
         error: "Share has expired",
       });
     }
 
-    /*
-     * View limit reached
-     */
-    if (share.views >= share.maxViews) {
+    // --------------------------------------------
+    // View limit
+    // --------------------------------------------
+
+    if (
+      share.views >=
+      share.maxViews
+    ) {
       return res.status(410).json({
         error: "View limit reached",
       });
     }
 
-    /*
-     * Count this retrieval as a view.
-     */
-    const updatedShare = updateShare(id, {
-      views: share.views + 1,
-    });
+    // --------------------------------------------
+    // Count successful retrieval
+    // --------------------------------------------
+
+    const updatedShare =
+      incrementShareViews(
+        req.params.id,
+      );
 
     if (!updatedShare) {
       return res.status(404).json({
@@ -260,43 +289,48 @@ app.get("/api/shares/:id", (req, res) => {
       });
     }
 
-    console.log(
-      `Share ${id} viewed: ${updatedShare.views}/${updatedShare.maxViews}`,
-    );
+    // --------------------------------------------
+    // Return encrypted data
+    // --------------------------------------------
 
-    /*
-     * Send ONLY encrypted information.
-     *
-     * The encryption key is never returned.
-     */
     return res.json({
       id: updatedShare.id,
-      ciphertext: updatedShare.ciphertext,
+
+      ciphertext:
+        updatedShare.ciphertext,
+
       iv: updatedShare.iv,
-      expiresAt: updatedShare.expiresAt,
-      maxViews: updatedShare.maxViews,
-      views: updatedShare.views,
-      riskLevel: updatedShare.riskLevel,
+
+      expiresAt:
+        updatedShare.expiresAt,
+
+      maxViews:
+        updatedShare.maxViews,
+
+      views:
+        updatedShare.views,
+
+      riskLevel:
+        updatedShare.riskLevel,
     });
-  } catch (error) {
-    console.error("Get share error:", error);
+  },
+);
 
-    return res.status(500).json({
-      error: "Failed to retrieve secure share",
-    });
-  }
-});
 
-/*
- * Burn / permanently disable a share
- */
-app.post("/api/shares/:id/burn", (req, res) => {
-  try {
-    const { id } = req.params;
+// --------------------------------------------------
+// KILL SWITCH
+// --------------------------------------------------
 
-    console.log(`Burning share: ${id}`);
+app.post(
+  "/api/shares/:id/burn",
+  (req, res) => {
+    const share = getShare(
+      req.params.id,
+    );
 
-    const share = getShare(id);
+    // --------------------------------------------
+    // Not found
+    // --------------------------------------------
 
     if (!share) {
       return res.status(404).json({
@@ -304,15 +338,52 @@ app.post("/api/shares/:id/burn", (req, res) => {
       });
     }
 
+    // --------------------------------------------
+    // Already burned
+    // --------------------------------------------
+
     if (share.burned) {
       return res.status(410).json({
-        error: "Share has already been burned",
+        error:
+          "Share has already been disabled",
       });
     }
 
-    const updatedShare = updateShare(id, {
-      burned: true,
-    });
+    // --------------------------------------------
+    // Authorization
+    // --------------------------------------------
+
+    const { burnToken } =
+      req.body;
+
+    if (!burnToken) {
+      return res.status(401).json({
+        error:
+          "Kill switch authorization required",
+      });
+    }
+
+    if (
+      burnToken !==
+      share.burnToken
+    ) {
+      return res.status(403).json({
+        error:
+          "Invalid kill switch authorization",
+      });
+    }
+
+    // --------------------------------------------
+    // Disable share
+    // --------------------------------------------
+
+    const updatedShare =
+      updateShare(
+        req.params.id,
+        {
+          burned: true,
+        },
+      );
 
     if (!updatedShare) {
       return res.status(404).json({
@@ -320,41 +391,27 @@ app.post("/api/shares/:id/burn", (req, res) => {
       });
     }
 
-    console.log(`Share burned: ${id}`);
-
     return res.json({
       id: updatedShare.id,
+
       status: "burned",
-      message: "Share has been permanently disabled.",
+
+      message:
+        "Share has been permanently disabled.",
     });
-  } catch (error) {
-    console.error("Burn share error:", error);
+  },
+);
 
-    return res.status(500).json({
-      error: "Failed to burn secure share",
-    });
-  }
-});
 
-/*
- * Handle unknown API routes
- */
-app.use("/api", (_req, res) => {
-  res.status(404).json({
-    error: "API endpoint not found",
-  });
-});
+// --------------------------------------------------
+// START SERVER
+// --------------------------------------------------
 
-/*
- * Start backend
- */
-app.listen(PORT, () => {
-  console.log("");
-  console.log("==========================================");
-  console.log(" Adaptive Secret backend");
-  console.log("==========================================");
-  console.log(` Server: http://localhost:${PORT}`);
-  console.log(` Health: http://localhost:${PORT}/api/health`);
-  console.log("==========================================");
-  console.log("");
-});
+app.listen(
+  PORT,
+  () => {
+    console.log(
+      `Adaptive Secret backend running on http://localhost:${PORT}`,
+    );
+  },
+);
