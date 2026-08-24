@@ -1,28 +1,19 @@
 import { useEffect, useRef, useState } from "react";
 import "./App.css";
 
-import {
-  detectSecrets,
-} from "./services/secretDetector";
-
-import {
-  analyzeRisk,
-} from "./services/riskEngine";
+import { detectSecrets } from "./services/secretDetector";
+import { analyzeRisk } from "./services/riskEngine";
 
 import {
   encryptSecret,
   createShare,
   getShare,
   decryptSecret,
+  burnShare,
 } from "./services/encryption";
 
-import type {
-  RiskAnalysis,
-} from "./services/riskEngine";
-
-import type {
-  DetectedSecret,
-} from "./services/secretDetector";
+import type { RiskAnalysis } from "./services/riskEngine";
+import type { DetectedSecret } from "./services/secretDetector";
 
 type EncryptedData = {
   ciphertext: string;
@@ -34,32 +25,16 @@ type ShareInfo = {
   id: string;
   expiresAt: string;
   maxViews: number;
+  burnToken: string;
 };
-
-/*
- * ---------------------------------------------------------
- * DETECTED SECRET HIGHLIGHT
- * ---------------------------------------------------------
- */
 
 function renderDetectedContent(
   text: string,
   detectedSecrets: DetectedSecret[],
 ) {
-  if (
-    detectedSecrets.length === 0 ||
-    !text
-  ) {
-    return (
-      <span>
-        {text}
-      </span>
-    );
+  if (detectedSecrets.length === 0 || !text) {
+    return <span>{text}</span>;
   }
-
-  /*
-   * Create ranges from the detected secrets.
-   */
 
   const ranges = detectedSecrets
     .map((secret) => ({
@@ -73,27 +48,15 @@ function renderDetectedContent(
         range.end <= text.length &&
         range.start < range.end,
     )
-    .sort(
-      (a, b) =>
-        a.start - b.start,
-    );
-
-  /*
-   * Prevent overlapping highlights.
-   */
+    .sort((a, b) => a.start - b.start);
 
   const safeRanges: typeof ranges = [];
 
   for (const range of ranges) {
     const previous =
-      safeRanges[
-        safeRanges.length - 1
-      ];
+      safeRanges[safeRanges.length - 1];
 
-    if (
-      previous &&
-      range.start < previous.end
-    ) {
+    if (previous && range.start < previous.end) {
       continue;
     }
 
@@ -104,55 +67,35 @@ function renderDetectedContent(
 
   let cursor = 0;
 
-  safeRanges.forEach(
-    (range, index) => {
-      /*
-       * Normal text before the secret.
-       */
-
-      if (cursor < range.start) {
-        elements.push(
-          <span
-            key={`text-${index}`}
-          >
-            {text.slice(
-              cursor,
-              range.start,
-            )}
-          </span>,
-        );
-      }
-
-      /*
-       * Masked secret.
-       */
-
+  safeRanges.forEach((range, index) => {
+    if (cursor < range.start) {
       elements.push(
-        <span
-          key={`secret-${index}`}
-          className="detected-highlight"
-          title={`${range.label} detected`}
-        >
-          {"█".repeat(
-            Math.max(
-              6,
-              Math.min(
-                20,
-                range.end -
-                  range.start,
-              ),
-            ),
-          )}
+        <span key={`text-${index}`}>
+          {text.slice(cursor, range.start)}
         </span>,
       );
+    }
 
-      cursor = range.end;
-    },
-  );
+    elements.push(
+      <span
+        key={`secret-${index}`}
+        className="detected-highlight"
+        title={`${range.label} detected`}
+      >
+        {"█".repeat(
+          Math.max(
+            6,
+            Math.min(
+              20,
+              range.end - range.start,
+            ),
+          ),
+        )}
+      </span>,
+    );
 
-  /*
-   * Remaining text.
-   */
+    cursor = range.end;
+  });
 
   if (cursor < text.length) {
     elements.push(
@@ -163,6 +106,52 @@ function renderDetectedContent(
   }
 
   return elements;
+}
+
+function formatDuration(
+  totalMinutes: number,
+): string {
+  const total = Math.max(
+    0,
+    Math.floor(totalMinutes),
+  );
+
+  const days = Math.floor(
+    total / 1440,
+  );
+
+  const hours = Math.floor(
+    (total % 1440) / 60,
+  );
+
+  const minutes = total % 60;
+
+  const parts: string[] = [];
+
+  if (days > 0) {
+    parts.push(
+      `${days} day${days !== 1 ? "s" : ""}`,
+    );
+  }
+
+  if (hours > 0) {
+    parts.push(
+      `${hours} hour${hours !== 1 ? "s" : ""}`,
+    );
+  }
+
+  if (
+    minutes > 0 ||
+    parts.length === 0
+  ) {
+    parts.push(
+      `${minutes} minute${
+        minutes !== 1 ? "s" : ""
+      }`,
+    );
+  }
+
+  return parts.join(" · ");
 }
 
 function App() {
@@ -178,10 +167,9 @@ function App() {
   const isSharePage =
     path.startsWith("/share/");
 
-  const shareId =
-    isSharePage
-      ? path.split("/share/")[1]
-      : null;
+  const shareId = isSharePage
+    ? path.split("/share/")[1]
+    : null;
 
   /*
    * ---------------------------------------------------------
@@ -221,19 +209,61 @@ function App() {
 
   /*
    * ---------------------------------------------------------
-   * SHARE CONTROLS
+   * KILL SWITCH STATE
    * ---------------------------------------------------------
    */
 
   const [
-    expiresInMinutes,
-    setExpiresInMinutes,
+    isRevoking,
+    setIsRevoking,
+  ] = useState(false);
+
+  const [
+    isRevoked,
+    setIsRevoked,
+  ] = useState(false);
+
+  const [
+    revokeError,
+    setRevokeError,
+  ] = useState("");
+
+  /*
+   * ---------------------------------------------------------
+   * FULLY CUSTOMIZABLE SHARE CONTROLS
+   * ---------------------------------------------------------
+   */
+
+  const [
+    expiryDays,
+    setExpiryDays,
+  ] = useState(0);
+
+  const [
+    expiryHours,
+    setExpiryHours,
+  ] = useState(0);
+
+  const [
+    expiryMinutes,
+    setExpiryMinutes,
   ] = useState(10);
 
   const [
     maxViews,
     setMaxViews,
   ] = useState(1);
+
+  const expiresInMinutes =
+    expiryDays * 24 * 60 +
+    expiryHours * 60 +
+    expiryMinutes;
+
+  /*
+   * ---------------------------------------------------------
+   * RISK RECOMMENDATIONS
+   * ---------------------------------------------------------
+   */
 
   const [
     recommendedExpiry,
@@ -286,21 +316,15 @@ function App() {
    */
 
   useEffect(() => {
-    if (
-      !isSharePage ||
-      !shareId
-    ) {
+    if (!isSharePage || !shareId) {
       return;
     }
 
-    if (
-      hasLoadedShare.current
-    ) {
+    if (hasLoadedShare.current) {
       return;
     }
 
-    hasLoadedShare.current =
-      true;
+    hasLoadedShare.current = true;
 
     const loadShare =
       async () => {
@@ -308,18 +332,6 @@ function App() {
         setReceiveError("");
 
         try {
-          /*
-           * Encryption key is stored in the
-           * URL fragment.
-           *
-           * Example:
-           *
-           * /share/abc123#key=ABC...
-           *
-           * The fragment is not sent to
-           * the backend.
-           */
-
           const hash =
             window.location.hash;
 
@@ -344,13 +356,15 @@ function App() {
           }
 
           /*
-           * Retrieve encrypted data.
+           * Backend checks:
+           * - Does share exist?
+           * - Is it revoked?
+           * - Has it expired?
+           * - Has view limit been reached?
            */
 
           const share =
-            await getShare(
-              shareId,
-            );
+            await getShare(shareId);
 
           /*
            * Decrypt locally.
@@ -401,10 +415,7 @@ function App() {
       };
 
     loadShare();
-  }, [
-    isSharePage,
-    shareId,
-  ]);
+  }, [isSharePage, shareId]);
 
   /*
    * ---------------------------------------------------------
@@ -412,75 +423,64 @@ function App() {
    * ---------------------------------------------------------
    */
 
-  const handleAnalyze =
-    () => {
-      const detectedSecrets =
-        detectSecrets(
-          secret,
-        );
+  const handleAnalyze = () => {
+    const detectedSecrets =
+      detectSecrets(secret);
 
-      const result =
-        analyzeRisk(
-          detectedSecrets,
-        );
-
-      setAnalysis(result);
-
-      /*
-       * Risk-based recommendations.
-       */
-
-      const recommendations = {
-        LOW: {
-          expires: 30,
-          views: 5,
-        },
-
-        MEDIUM: {
-          expires: 15,
-          views: 3,
-        },
-
-        HIGH: {
-          expires: 10,
-          views: 1,
-        },
-
-        CRITICAL: {
-          expires: 5,
-          views: 1,
-        },
-      };
-
-      const recommended =
-        recommendations[
-          result.level
-        ];
-
-      setRecommendedExpiry(
-        recommended.expires,
+    const result =
+      analyzeRisk(
+        detectedSecrets,
       );
 
-      setRecommendedViews(
-        recommended.views,
-      );
+    setAnalysis(result);
 
-      /*
-       * Start with recommended values.
-       */
+    const recommendations = {
+      LOW: {
+        expires: 30,
+        views: 5,
+      },
 
-      setExpiresInMinutes(
-        recommended.expires,
-      );
+      MEDIUM: {
+        expires: 15,
+        views: 3,
+      },
 
-      setMaxViews(
-        recommended.views,
-      );
+      HIGH: {
+        expires: 10,
+        views: 1,
+      },
 
-      setEncryptedData(null);
-      setShareInfo(null);
-      setEncryptionError("");
+      CRITICAL: {
+        expires: 5,
+        views: 1,
+      },
     };
+
+    const recommended =
+      recommendations[result.level];
+
+    setRecommendedExpiry(
+      recommended.expires,
+    );
+
+    setRecommendedViews(
+      recommended.views,
+    );
+
+    setEncryptedData(null);
+    setShareInfo(null);
+
+    setEncryptionError("");
+
+    /*
+     * Reset kill-switch state
+     * whenever a new secret is analyzed.
+     */
+
+    setIsRevoking(false);
+    setIsRevoked(false);
+    setRevokeError("");
+  };
 
   /*
    * ---------------------------------------------------------
@@ -494,10 +494,36 @@ function App() {
         return;
       }
 
+      if (expiresInMinutes <= 0) {
+        setEncryptionError(
+          "Expiration time must be greater than 0 minutes.",
+        );
+        return;
+      }
+
+      if (
+        !Number.isInteger(maxViews) ||
+        maxViews <= 0
+      ) {
+        setEncryptionError(
+          "Maximum views must be at least 1.",
+        );
+        return;
+      }
+
       setIsEncrypting(true);
       setEncryptionError("");
+
       setEncryptedData(null);
       setShareInfo(null);
+
+      /*
+       * Reset kill switch for new share.
+       */
+
+      setIsRevoking(false);
+      setIsRevoked(false);
+      setRevokeError("");
 
       try {
         /*
@@ -514,7 +540,7 @@ function App() {
         );
 
         /*
-         * Send encrypted data to backend.
+         * Send encrypted data only.
          *
          * Encryption key is NOT sent.
          */
@@ -558,32 +584,110 @@ function App() {
 
   /*
    * ---------------------------------------------------------
+   * KILL SWITCH / REVOKE SHARE
+   * ---------------------------------------------------------
+   */
+
+  const handleRevokeShare =
+    async () => {
+      if (
+        !shareInfo ||
+        isRevoking ||
+        isRevoked
+      ) {
+        return;
+      }
+
+      const confirmed =
+        window.confirm(
+          "Revoke this share permanently?\n\nAnyone with the link will no longer be able to access the secret.",
+        );
+
+      if (!confirmed) {
+        return;
+      }
+
+      setIsRevoking(true);
+      setRevokeError("");
+
+      try {
+        /*
+         * Send revocation request
+         * to backend.
+         *
+         * Backend changes:
+         *
+         * burned = true
+         */
+
+        await burnShare(
+          shareInfo.id,
+          shareInfo.burnToken,
+        );
+
+        /*
+         * Mark locally as revoked.
+         */
+
+        setIsRevoked(true);
+
+        /*
+         * Remove the secret/link
+         * from the creator UI.
+         *
+         * The backend is already
+         * enforcing the revocation.
+         */
+
+        setEncryptedData(null);
+      } catch (error) {
+        console.error(
+          "Failed to revoke share:",
+          error,
+        );
+
+        if (
+          error instanceof Error
+        ) {
+          setRevokeError(
+            error.message,
+          );
+        } else {
+          setRevokeError(
+            "Failed to revoke secure share.",
+          );
+        }
+      } finally {
+        setIsRevoking(false);
+      }
+    };
+
+  /*
+   * ---------------------------------------------------------
    * SHARE URL
    * ---------------------------------------------------------
    */
 
-  const getShareUrl =
-    () => {
-      if (
-        !shareInfo ||
-        !encryptedData
-      ) {
-        return "";
-      }
+  const getShareUrl = () => {
+    if (
+      !shareInfo ||
+      !encryptedData ||
+      isRevoked
+    ) {
+      return "";
+    }
 
-      /*
-       * IMPORTANT:
-       *
-       * The key is placed after #.
-       *
-       * Therefore it stays in the browser
-       * and is not sent to the backend.
-       */
+    /*
+     * Key is stored in URL fragment.
+     *
+     * The fragment is never sent
+     * to the backend.
+     */
 
-      return `${window.location.origin}/share/${shareInfo.id}#key=${encodeURIComponent(
-        encryptedData.key,
-      )}`;
-    };
+    return `${window.location.origin}/share/${shareInfo.id}#key=${encodeURIComponent(
+      encryptedData.key,
+    )}`;
+  };
 
   /*
    * ---------------------------------------------------------
@@ -635,9 +739,8 @@ function App() {
    */
 
   const getRiskClass =
-    (level: string) => {
-      return `risk-${level.toLowerCase()}`;
-    };
+    (level: string) =>
+      `risk-${level.toLowerCase()}`;
 
   /*
    * =========================================================
@@ -648,11 +751,9 @@ function App() {
   if (isSharePage) {
     return (
       <main className="app">
-
         <div className="container">
 
           <header className="header">
-
             <p className="eyebrow">
               ADAPTIVE SECRET LIFECYCLE
             </p>
@@ -666,7 +767,6 @@ function App() {
               decrypted locally in your
               browser.
             </p>
-
           </header>
 
           <section className="card result-card">
@@ -809,7 +909,7 @@ function App() {
                         <strong>
                           {new Date(
                             receivedShareInfo.expiresAt,
-                          ).toLocaleTimeString()}
+                          ).toLocaleString()}
                         </strong>
                       </div>
 
@@ -822,7 +922,6 @@ function App() {
           </section>
 
         </div>
-
       </main>
     );
   }
@@ -881,7 +980,6 @@ function App() {
             id="secret-input"
             value={secret}
             onChange={(event) => {
-
               setSecret(
                 event.target.value,
               );
@@ -889,8 +987,12 @@ function App() {
               setAnalysis(null);
               setEncryptedData(null);
               setShareInfo(null);
+
               setEncryptionError("");
 
+              setIsRevoked(false);
+              setIsRevoking(false);
+              setRevokeError("");
             }}
             placeholder={`Example:
 hello my password is 1234
@@ -1146,8 +1248,8 @@ DB_PASSWORD=your-password`}
               </div>
 
               <p className="result-placeholder">
-                Choose how long this
-                secret should remain
+                Choose exactly how long
+                this secret should remain
                 available and how many
                 times it can be viewed.
               </p>
@@ -1156,93 +1258,140 @@ DB_PASSWORD=your-password`}
 
                 <div className="control-group">
 
-                  <label htmlFor="expiry-select">
+                  <label>
                     Expires after
                   </label>
 
-                  <select
-                    id="expiry-select"
-                    value={
-                      expiresInMinutes
-                    }
-                    onChange={(event) =>
-                      setExpiresInMinutes(
-                        Number(
-                          event.target.value,
-                        ),
-                      )
-                    }
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: "8px",
+                      alignItems: "center",
+                      flexWrap: "wrap",
+                    }}
                   >
 
-                    <option value={5}>
-                      5 minutes
-                    </option>
+                    <div>
 
-                    <option value={10}>
-                      10 minutes
-                    </option>
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={
+                          expiryDays
+                        }
+                        onChange={(event) =>
+                          setExpiryDays(
+                            Math.max(
+                              0,
+                              Number(
+                                event.target.value,
+                              ) || 0,
+                            ),
+                          )
+                        }
+                        aria-label="Expiry days"
+                      />
 
-                    <option value={15}>
-                      15 minutes
-                    </option>
+                      <span>
+                        {" "}days
+                      </span>
 
-                    <option value={30}>
-                      30 minutes
-                    </option>
+                    </div>
 
-                    <option value={60}>
-                      1 hour
-                    </option>
+                    <div>
 
-                    <option value={1440}>
-                      24 hours
-                    </option>
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={
+                          expiryHours
+                        }
+                        onChange={(event) =>
+                          setExpiryHours(
+                            Math.max(
+                              0,
+                              Number(
+                                event.target.value,
+                              ) || 0,
+                            ),
+                          )
+                        }
+                        aria-label="Expiry hours"
+                      />
 
-                  </select>
+                      <span>
+                        {" "}hours
+                      </span>
+
+                    </div>
+
+                    <div>
+
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={
+                          expiryMinutes
+                        }
+                        onChange={(event) =>
+                          setExpiryMinutes(
+                            Math.max(
+                              0,
+                              Number(
+                                event.target.value,
+                              ) || 0,
+                            ),
+                          )
+                        }
+                        aria-label="Expiry minutes"
+                      />
+
+                      <span>
+                        {" "}minutes
+                      </span>
+
+                    </div>
+
+                  </div>
 
                 </div>
 
                 <div className="control-group">
 
-                  <label htmlFor="views-select">
+                  <label htmlFor="views-input">
                     Maximum views
                   </label>
 
-                  <select
-                    id="views-select"
-                    value={
-                      maxViews
-                    }
-                    onChange={(event) =>
-                      setMaxViews(
-                        Number(
-                          event.target.value,
-                        ),
-                      )
-                    }
-                  >
+                  <div>
 
-                    <option value={1}>
-                      1 view
-                    </option>
+                    <input
+                      id="views-input"
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={
+                        maxViews
+                      }
+                      onChange={(event) =>
+                        setMaxViews(
+                          Math.max(
+                            1,
+                            Number(
+                              event.target.value,
+                            ) || 1,
+                          ),
+                        )
+                      }
+                    />
 
-                    <option value={2}>
-                      2 views
-                    </option>
+                    <span>
+                      {" "}views
+                    </span>
 
-                    <option value={3}>
-                      3 views
-                    </option>
-
-                    <option value={5}>
-                      5 views
-                    </option>
-
-                    <option value={10}>
-                      10 views
-                    </option>
-
-                  </select>
+                  </div>
 
                 </div>
 
@@ -1250,15 +1399,42 @@ DB_PASSWORD=your-password`}
 
               <div className="security-note">
 
-                🔐 Recommended for{" "}
+                🔐 Your policy:
+                {" "}
+
+                <strong>
+                  {formatDuration(
+                    expiresInMinutes,
+                  )}
+                </strong>
+
+                {" · "}
+
+                <strong>
+                  {maxViews} view
+                  {maxViews !== 1
+                    ? "s"
+                    : ""}
+                </strong>
+
+              </div>
+
+              <div className="security-note">
+
+                💡 Recommended for{" "}
                 <strong>
                   {analysis.level}
                 </strong>
                 :{" "}
+
                 <strong>
-                  {recommendedExpiry} minutes
+                  {formatDuration(
+                    recommendedExpiry,
+                  )}
                 </strong>
+
                 {" · "}
+
                 <strong>
                   {recommendedViews} view
                   {recommendedViews !== 1
@@ -1278,12 +1454,15 @@ DB_PASSWORD=your-password`}
                   <p>
                     Your selected settings:
                     {" "}
+
                     <strong>
-                      {
-                        expiresInMinutes
-                      } minutes
+                      {formatDuration(
+                        expiresInMinutes,
+                      )}
                     </strong>
+
                     {" · "}
+
                     <strong>
                       {maxViews} view
                       {maxViews !== 1
@@ -1326,7 +1505,9 @@ DB_PASSWORD=your-password`}
                   handleCreateSecureShare
                 }
                 disabled={
-                  isEncrypting
+                  isEncrypting ||
+                  expiresInMinutes <= 0 ||
+                  maxViews <= 0
                 }
               >
                 {isEncrypting
@@ -1346,141 +1527,297 @@ DB_PASSWORD=your-password`}
                 ENCRYPTION RESULT
                ================================================= */}
 
-            {encryptedData && (
-              <div className="encryption-success">
+            {encryptedData &&
+              !isRevoked && (
+                <div className="encryption-success">
 
-                <div className="success-header">
+                  <div className="success-header">
 
-                  <span>
-                    ✓
-                  </span>
-
-                  <strong>
-                    Secret encrypted
-                    successfully
-                  </strong>
-
-                </div>
-
-                <p>
-                  AES-256-GCM encryption
-                  completed locally.
-                </p>
-
-                <div className="encrypted-preview">
-
-                  <span>
-                    Ciphertext
-                  </span>
-
-                  <code>
-                    {encryptedData.ciphertext.slice(
-                      0,
-                      80,
-                    )}
-                    ...
-                  </code>
-
-                </div>
-
-              </div>
-            )}
-
-            {/* =================================================
-                GENERATED SHARE
-               ================================================= */}
-
-            {shareInfo &&
-              encryptedData && (
-                <div className="analysis-section">
-
-                  <h2>
-                    Secure Share Created
-                  </h2>
-
-                  <p>
-                    Your encrypted secret
-                    is ready to share.
-                  </p>
-
-                  <div className="share-created">
-
-                    <span className="share-status">
-                      ACTIVE
+                    <span>
+                      ✓
                     </span>
 
-                    <div className="share-link-row">
+                    <strong>
+                      Secret encrypted
+                      successfully
+                    </strong>
 
-                      <input
-                        type="text"
-                        readOnly
-                        value={
-                          getShareUrl()
-                        }
-                      />
+                  </div>
 
-                      <button
-                        type="button"
-                        onClick={
-                          handleCopyLink
-                        }
-                      >
-                        Copy Link
-                      </button>
+                  <p>
+                    AES-256-GCM encryption
+                    completed locally.
+                  </p>
 
-                    </div>
+                  <div className="encrypted-preview">
 
-                    <div className="placeholder-grid">
+                    <span>
+                      Ciphertext
+                    </span>
 
-                      <div>
-                        <span>
-                          Encryption
-                        </span>
-
-                        <strong>
-                          AES-256-GCM
-                        </strong>
-                      </div>
-
-                      <div>
-                        <span>
-                          Expires
-                        </span>
-
-                        <strong>
-                          {expiresInMinutes <
-                          60
-                            ? `${expiresInMinutes} minutes`
-                            : expiresInMinutes ===
-                              60
-                            ? "1 hour"
-                            : "24 hours"}
-                        </strong>
-                      </div>
-
-                      <div>
-                        <span>
-                          Maximum Views
-                        </span>
-
-                        <strong>
-                          {maxViews}
-                        </strong>
-                      </div>
-
-                    </div>
-
-                    <p className="security-note">
-                      🔐 The encryption key
-                      is kept in the URL
-                      fragment and is not
-                      sent to the backend.
-                    </p>
+                    <code>
+                      {encryptedData.ciphertext.slice(
+                        0,
+                        80,
+                      )}
+                      ...
+                    </code>
 
                   </div>
 
                 </div>
               )}
+
+            {/* =================================================
+                GENERATED SHARE + KILL SWITCH
+               ================================================= */}
+
+            {shareInfo && (
+              <div className="analysis-section">
+
+                {isRevoked ? (
+
+                  /*
+                   * =============================================
+                   * REVOKED STATE
+                   * =============================================
+                   */
+
+                  <div className="encryption-error">
+
+                    <div className="success-header">
+
+                      <span>
+                        ✓
+                      </span>
+
+                      <strong>
+                        Share Revoked
+                      </strong>
+
+                    </div>
+
+                    <p>
+                      This secure share has
+                      been permanently
+                      disabled.
+                    </p>
+
+                    <p>
+                      Anyone using the
+                      original link will now
+                      receive a "Share has
+                      been burned" response
+                      from the backend.
+                    </p>
+
+                    <div className="security-note">
+
+                      🔴 Kill switch activated
+
+                    </div>
+
+                  </div>
+
+                ) : (
+
+                  /*
+                   * =============================================
+                   * ACTIVE SHARE
+                   * =============================================
+                   */
+
+                  <>
+
+                    <h2>
+                      Secure Share Created
+                    </h2>
+
+                    <p>
+                      Your encrypted secret
+                      is ready to share.
+                    </p>
+
+                    <div className="share-created">
+
+                      <span className="share-status">
+                        ACTIVE
+                      </span>
+
+                      <div className="share-link-row">
+
+                        <input
+                          type="text"
+                          readOnly
+                          value={
+                            getShareUrl()
+                          }
+                        />
+
+                        <button
+                          type="button"
+                          onClick={
+                            handleCopyLink
+                          }
+                        >
+                          Copy Link
+                        </button>
+
+                      </div>
+
+                      <div className="placeholder-grid">
+
+                        <div>
+
+                          <span>
+                            Encryption
+                          </span>
+
+                          <strong>
+                            AES-256-GCM
+                          </strong>
+
+                        </div>
+
+                        <div>
+
+                          <span>
+                            Expires
+                          </span>
+
+                          <strong>
+                            {formatDuration(
+                              expiresInMinutes,
+                            )}
+                          </strong>
+
+                        </div>
+
+                        <div>
+
+                          <span>
+                            Maximum Views
+                          </span>
+
+                          <strong>
+                            {maxViews}
+                          </strong>
+
+                        </div>
+
+                      </div>
+
+                      <p className="security-note">
+
+                        🔐 The encryption key
+                        is kept in the URL
+                        fragment and is not
+                        sent to the backend.
+
+                      </p>
+
+                      {/* =========================================
+                          KILL SWITCH
+                         ========================================= */}
+
+                      <div
+                        style={{
+                          marginTop:
+                            "24px",
+                          paddingTop:
+                            "20px",
+                          borderTop:
+                            "1px solid rgba(255,255,255,0.1)",
+                        }}
+                      >
+
+                        <div
+                          style={{
+                            marginBottom:
+                              "12px",
+                          }}
+                        >
+
+                          <strong>
+                            Emergency Access Control
+                          </strong>
+
+                          <p
+                            className="result-placeholder"
+                            style={{
+                              marginTop:
+                                "6px",
+                            }}
+                          >
+                            Revoke this share
+                            immediately. The
+                            original link will
+                            stop working even
+                            before its expiration
+                            time or view limit is
+                            reached.
+                          </p>
+
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={
+                            handleRevokeShare
+                          }
+                          disabled={
+                            isRevoking
+                          }
+                          style={{
+                            background:
+                              "#b42318",
+                            color:
+                              "white",
+                            border:
+                              "none",
+                            padding:
+                              "12px 18px",
+                            borderRadius:
+                              "8px",
+                            cursor:
+                              isRevoking
+                                ? "not-allowed"
+                                : "pointer",
+                            fontWeight:
+                              600,
+                            opacity:
+                              isRevoking
+                                ? 0.7
+                                : 1,
+                          }}
+                        >
+                          {isRevoking
+                            ? "Revoking Share..."
+                            : "🔴 Revoke Share"}
+                        </button>
+
+                        {revokeError && (
+                          <div
+                            className="encryption-error"
+                            style={{
+                              marginTop:
+                                "12px",
+                            }}
+                          >
+                            {revokeError}
+                          </div>
+                        )}
+
+                      </div>
+
+                    </div>
+
+                  </>
+
+                )}
+
+              </div>
+            )}
 
           </section>
         )}

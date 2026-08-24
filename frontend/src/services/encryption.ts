@@ -11,11 +11,11 @@ export interface ShareResponse {
   id: string;
   expiresAt: string;
   maxViews: number;
+  burnToken: string;
 }
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
-
   let binary = "";
 
   for (const byte of bytes) {
@@ -36,11 +36,6 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
   return bytes.buffer;
 }
 
-/**
- * Encrypt a secret locally using AES-256-GCM.
- *
- * The plaintext never leaves the browser.
- */
 export async function encryptSecret(
   secret: string,
 ): Promise<EncryptedSecret> {
@@ -53,7 +48,9 @@ export async function encryptSecret(
     ["encrypt", "decrypt"],
   );
 
-  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const iv = crypto.getRandomValues(
+    new Uint8Array(12),
+  );
 
   const encrypted = await crypto.subtle.encrypt(
     {
@@ -64,7 +61,10 @@ export async function encryptSecret(
     encoder.encode(secret),
   );
 
-  const rawKey = await crypto.subtle.exportKey("raw", key);
+  const rawKey = await crypto.subtle.exportKey(
+    "raw",
+    key,
+  );
 
   return {
     ciphertext: arrayBufferToBase64(encrypted),
@@ -74,10 +74,10 @@ export async function encryptSecret(
 }
 
 /**
- * Send the encrypted secret to the backend.
+ * Create a share.
  *
- * IMPORTANT:
- * The encryption key is deliberately NOT sent.
+ * The frontend works in minutes; the backend expects seconds.
+ * The encryption key is never sent to the backend.
  */
 export async function createShare(
   encryptedSecret: EncryptedSecret,
@@ -87,42 +87,55 @@ export async function createShare(
     riskLevel?: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
   },
 ): Promise<ShareResponse> {
-  const response = await fetch("http://localhost:4000/api/shares", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
+  const expiresInMinutes = options?.expiresInMinutes ?? 10;
+
+  if (!Number.isFinite(expiresInMinutes) || expiresInMinutes <= 0) {
+    throw new Error("Expiration time must be greater than 0.");
+  }
+
+  const expiresInSeconds = Math.round(expiresInMinutes * 60);
+
+  const response = await fetch(
+    "http://localhost:4000/api/shares",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        ciphertext: encryptedSecret.ciphertext,
+        iv: encryptedSecret.iv,
+        expiresInSeconds,
+        maxViews: options?.maxViews ?? 1,
+        riskLevel: options?.riskLevel ?? "LOW",
+      }),
     },
-    body: JSON.stringify({
-      ciphertext: encryptedSecret.ciphertext,
-      iv: encryptedSecret.iv,
-      expiresInMinutes: options?.expiresInMinutes ?? 10,
-      maxViews: options?.maxViews ?? 1,
-      riskLevel: options?.riskLevel ?? "LOW",
-    }),
-  });
+  );
 
   if (!response.ok) {
     let errorMessage = "Failed to create secure share.";
 
     try {
       const errorData = await response.json();
-
       if (errorData?.error) {
         errorMessage = errorData.error;
       }
     } catch {
-      // Keep default error message
+      // Keep default error.
     }
 
     throw new Error(errorMessage);
   }
 
-  return response.json();
+  const data = await response.json();
+
+  if (!data?.id || !data?.expiresAt || !data?.burnToken) {
+    throw new Error("Backend returned an incomplete share response.");
+  }
+
+  return data;
 }
 
-/**
- * Retrieve an encrypted secret from the backend.
- */
 export async function getShare(
   shareId: string,
 ): Promise<{
@@ -143,12 +156,11 @@ export async function getShare(
 
     try {
       const errorData = await response.json();
-
       if (errorData?.error) {
         errorMessage = errorData.error;
       }
     } catch {
-      // Keep default error message
+      // Keep default error.
     }
 
     throw new Error(errorMessage);
@@ -158,10 +170,63 @@ export async function getShare(
 }
 
 /**
- * Decrypt a secret locally.
- *
- * The decryption key must be available in the browser.
+ * Creator-only kill switch.
+ * The burnToken is never included in the recipient URL.
  */
+export async function burnShare(
+  shareId: string,
+  burnToken: string,
+): Promise<{
+  id: string;
+  status: string;
+  message: string;
+}> {
+  if (!burnToken) {
+    throw new Error("Kill switch authorization is missing.");
+  }
+
+  const response = await fetch(
+    `http://localhost:4000/api/shares/${encodeURIComponent(shareId)}/burn`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        burnToken,
+      }),
+    },
+  );
+
+  if (!response.ok) {
+    let errorMessage = "Failed to revoke secure share.";
+
+    try {
+      const errorData = await response.json();
+      if (errorData?.error) {
+        errorMessage = errorData.error;
+      }
+    } catch {
+      // Keep default error.
+    }
+
+    throw new Error(errorMessage);
+  }
+
+  return response.json();
+}
+
+export async function revokeShare(
+  shareId: string,
+  burnToken: string,
+): Promise<{
+  id: string;
+  status: string;
+  message: string;
+}> {
+  return burnShare(shareId, burnToken);
+}
+
 export async function decryptSecret(
   encryptedSecret: EncryptedSecret,
 ): Promise<string> {
