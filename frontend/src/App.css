@@ -461,4 +461,87 @@ button:disabled {
   .share-button {
     width: 100%;
   }
+   .masked-preview {
+  margin-top: 14px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--code-bg);
+  color: var(--text-h);
+  font-family: var(--mono);
+  font-size: 15px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.masked-secret {
+  display: inline;
+  padding: 2px 6px;
+  margin: 0 2px;
+  border-radius: 5px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+.preview-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.preview-header h3 {
+  margin-bottom: 4px;
+}
+
+.preview-header p {
+  font-size: 14px;
+  color: var(--text);
+}
+
+.preview-status {
+  flex-shrink: 0;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-border);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.7px;
+}
+
+.share-link-section {
+  margin-top: 24px;
+  padding: 20px;
+  border: 1px solid var(--accent-border);
+  border-radius: 14px;
+  background: var(--accent-bg);
+}
+
+.share-link-section p {
+  margin: 8px 0 14px;
+}
+
+.share-link-box {
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  overflow-x: auto;
+}
+
+.share-link-box code {
+  display: block;
+  padding: 0;
+  background: transparent;
+  word-break: break-all;
+}
+
+.copy-button {
+  margin-top: 12px;
+}
 }

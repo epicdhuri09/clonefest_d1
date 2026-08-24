@@ -1,8 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import "./App.css";
 
-import { detectSecrets } from "./services/secretDetector";
-import { analyzeRisk } from "./services/riskEngine";
+import {
+  detectSecrets,
+} from "./services/secretDetector";
+
+import {
+  analyzeRisk,
+} from "./services/riskEngine";
 
 import {
   encryptSecret,
@@ -11,373 +16,861 @@ import {
   decryptSecret,
 } from "./services/encryption";
 
-import type { RiskAnalysis } from "./services/riskEngine";
+import type {
+  RiskAnalysis,
+} from "./services/riskEngine";
 
-function App() {
-  const [secret, setSecret] = useState("");
-  const [analysis, setAnalysis] = useState<RiskAnalysis | null>(null);
+import type {
+  DetectedSecret,
+} from "./services/secretDetector";
 
-  const [encryptedData, setEncryptedData] = useState<{
-    ciphertext: string;
-    iv: string;
-    key: string;
-  } | null>(null);
+type EncryptedData = {
+  ciphertext: string;
+  iv: string;
+  key: string;
+};
 
-  const [isEncrypting, setIsEncrypting] = useState(false);
-  const [encryptionError, setEncryptionError] = useState("");
+type ShareInfo = {
+  id: string;
+  expiresAt: string;
+  maxViews: number;
+};
 
-  const [shareId, setShareId] = useState<string | null>(null);
-  const [shareUrl, setShareUrl] = useState<string | null>(null);
-  const [shareExpiresAt, setShareExpiresAt] = useState<string | null>(null);
-  const [shareMaxViews, setShareMaxViews] = useState<number | null>(null);
+/*
+ * ---------------------------------------------------------
+ * DETECTED SECRET HIGHLIGHT
+ * ---------------------------------------------------------
+ */
 
-  const [receivedSecret, setReceivedSecret] = useState("");
-  const [shareError, setShareError] = useState("");
-  const [isLoadingShare, setIsLoadingShare] = useState(false);
+function renderDetectedContent(
+  text: string,
+  detectedSecrets: DetectedSecret[],
+) {
+  if (
+    detectedSecrets.length === 0 ||
+    !text
+  ) {
+    return (
+      <span>
+        {text}
+      </span>
+    );
+  }
 
   /*
-   * Prevent React StrictMode from requesting the same
-   * one-time secret twice during development.
+   * Create ranges from the detected secrets.
    */
-  const shareLoaded = useRef(false);
+
+  const ranges = detectedSecrets
+    .map((secret) => ({
+      start: secret.start,
+      end: secret.end,
+      label: secret.label,
+    }))
+    .filter(
+      (range) =>
+        range.start >= 0 &&
+        range.end <= text.length &&
+        range.start < range.end,
+    )
+    .sort(
+      (a, b) =>
+        a.start - b.start,
+    );
 
   /*
-   * Check whether this is a secure-share URL.
-   *
-   * Example:
-   * http://localhost:5174/?share=abc123#encryption-key
+   * Prevent overlapping highlights.
    */
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const id = params.get("share");
 
-    if (!id) {
-      return;
+  const safeRanges: typeof ranges = [];
+
+  for (const range of ranges) {
+    const previous =
+      safeRanges[
+        safeRanges.length - 1
+      ];
+
+    if (
+      previous &&
+      range.start < previous.end
+    ) {
+      continue;
     }
 
-    if (shareLoaded.current) {
-      return;
-    }
+    safeRanges.push(range);
+  }
 
-    shareLoaded.current = true;
+  const elements: React.ReactNode[] = [];
 
-    loadSharedSecret(id);
-  }, []);
+  let cursor = 0;
 
-  /*
-   * Load and decrypt a shared secret.
-   */
-  const loadSharedSecret = async (id: string) => {
-    setIsLoadingShare(true);
-    setShareError("");
-    setReceivedSecret("");
-
-    try {
+  safeRanges.forEach(
+    (range, index) => {
       /*
-       * The encryption key lives in the URL fragment.
-       *
-       * Example:
-       * ?share=abc123#BASE64_KEY
+       * Normal text before the secret.
        */
-      const key = decodeURIComponent(
-      window.location.hash.replace(/^#/, ""),
+
+      if (cursor < range.start) {
+        elements.push(
+          <span
+            key={`text-${index}`}
+          >
+            {text.slice(
+              cursor,
+              range.start,
+            )}
+          </span>,
+        );
+      }
+
+      /*
+       * Masked secret.
+       */
+
+      elements.push(
+        <span
+          key={`secret-${index}`}
+          className="detected-highlight"
+          title={`${range.label} detected`}
+        >
+          {"█".repeat(
+            Math.max(
+              6,
+              Math.min(
+                20,
+                range.end -
+                  range.start,
+              ),
+            ),
+          )}
+        </span>,
       );
 
-      if (!key) {
-        throw new Error(
-          "Encryption key is missing from the share link.",
-        );
-      }
-
-      /*
-       * Ask the backend for the encrypted payload.
-       *
-       * The backend does NOT receive the encryption key.
-       */
-      const share = await getShare(id);
-
-      /*
-       * Decrypt locally in the browser.
-       */
-      const plaintext = await decryptSecret({
-        ciphertext: share.ciphertext,
-        iv: share.iv,
-        key,
-      });
-
-      setShareId(share.id);
-      setReceivedSecret(plaintext);
-      setShareExpiresAt(share.expiresAt);
-      setShareMaxViews(share.maxViews);
-    } catch (error) {
-      console.error("Failed to open secure share:", error);
-
-      if (error instanceof Error) {
-        setShareError(error.message);
-      } else {
-        setShareError(
-          "This secure share could not be opened.",
-        );
-      }
-    } finally {
-      setIsLoadingShare(false);
-    }
-  };
+      cursor = range.end;
+    },
+  );
 
   /*
-   * Analyze the secret locally.
+   * Remaining text.
    */
-  const handleAnalyze = () => {
-    const detectedSecrets = detectSecrets(secret);
-    const result = analyzeRisk(detectedSecrets);
 
-    setAnalysis(result);
-    setEncryptedData(null);
-    setEncryptionError("");
-  };
+  if (cursor < text.length) {
+    elements.push(
+      <span key="remaining-text">
+        {text.slice(cursor)}
+      </span>,
+    );
+  }
 
+  return elements;
+}
+
+function App() {
   /*
-   * Encrypt locally and create a backend share.
+   * ---------------------------------------------------------
+   * ROUTING
+   * ---------------------------------------------------------
    */
-  const handleCreateSecureShare = async () => {
-    if (!secret.trim()) {
-      return;
-    }
 
-    setIsEncrypting(true);
-    setEncryptionError("");
-    setEncryptedData(null);
-    setShareUrl(null);
+  const path =
+    window.location.pathname;
 
-    try {
-      /*
-       * Encrypt entirely in the browser.
-       */
-      const encrypted = await encryptSecret(secret);
+  const isSharePage =
+    path.startsWith("/share/");
 
-      setEncryptedData(encrypted);
-
-      /*
-       * Only ciphertext + IV are sent to backend.
-       * The key remains in the browser.
-       */
-      const createdShare = await createShare(encrypted, {
-        expiresInMinutes: 10,
-        maxViews: 1,
-        riskLevel: analysis?.level ?? "LOW",
-      });
-
-      /*
-       * Put the encryption key in the URL fragment.
-       *
-       * Important:
-       * URL fragments are not sent to the backend.
-       */
-      const url = `${window.location.origin}/?share=${encodeURIComponent(
-        createdShare.id,
-      )}#${encodeURIComponent(encrypted.key)}`;
-
-      setShareId(createdShare.id);
-      setShareUrl(url);
-      setShareExpiresAt(createdShare.expiresAt);
-      setShareMaxViews(createdShare.maxViews);
-    } catch (error) {
-      console.error("Secure share creation failed:", error);
-
-      if (error instanceof Error) {
-        setEncryptionError(error.message);
-      } else {
-        setEncryptionError(
-          "Failed to create secure share.",
-        );
-      }
-    } finally {
-      setIsEncrypting(false);
-    }
-  };
-
-  /*
-   * Copy secure-share URL.
-   */
-  const handleCopyLink = async () => {
-    if (!shareUrl) {
-      return;
-    }
-
-    try {
-      await navigator.clipboard.writeText(shareUrl);
-    } catch (error) {
-      console.error("Failed to copy link:", error);
-    }
-  };
-
-  const getRiskClass = (level: string) => {
-    return `risk-${level.toLowerCase()}`;
-  };
+  const shareId =
+    isSharePage
+      ? path.split("/share/")[1]
+      : null;
 
   /*
    * ---------------------------------------------------------
-   * SECURE SHARE VIEW
+   * CREATE PAGE STATE
    * ---------------------------------------------------------
    */
-  if (window.location.search.includes("share=")) {
+
+  const [secret, setSecret] =
+    useState("");
+
+  const [analysis, setAnalysis] =
+    useState<RiskAnalysis | null>(
+      null,
+    );
+
+  const [
+    encryptedData,
+    setEncryptedData,
+  ] = useState<EncryptedData | null>(
+    null,
+  );
+
+  const [shareInfo, setShareInfo] =
+    useState<ShareInfo | null>(
+      null,
+    );
+
+  const [
+    isEncrypting,
+    setIsEncrypting,
+  ] = useState(false);
+
+  const [
+    encryptionError,
+    setEncryptionError,
+  ] = useState("");
+
+  /*
+   * ---------------------------------------------------------
+   * SHARE CONTROLS
+   * ---------------------------------------------------------
+   */
+
+  const [
+    expiresInMinutes,
+    setExpiresInMinutes,
+  ] = useState(10);
+
+  const [
+    maxViews,
+    setMaxViews,
+  ] = useState(1);
+
+  const [
+    recommendedExpiry,
+    setRecommendedExpiry,
+  ] = useState(10);
+
+  const [
+    recommendedViews,
+    setRecommendedViews,
+  ] = useState(1);
+
+  /*
+   * ---------------------------------------------------------
+   * RECEIVE PAGE STATE
+   * ---------------------------------------------------------
+   */
+
+  const [
+    receivedSecret,
+    setReceivedSecret,
+  ] = useState("");
+
+  const [
+    receiveError,
+    setReceiveError,
+  ] = useState("");
+
+  const [
+    isReceiving,
+    setIsReceiving,
+  ] = useState(false);
+
+  const [
+    receivedShareInfo,
+    setReceivedShareInfo,
+  ] = useState<{
+    expiresAt: string;
+    maxViews: number;
+    views: number;
+    riskLevel: string;
+  } | null>(null);
+
+  const hasLoadedShare =
+    useRef(false);
+
+  /*
+   * ---------------------------------------------------------
+   * LOAD SHARED SECRET
+   * ---------------------------------------------------------
+   */
+
+  useEffect(() => {
+    if (
+      !isSharePage ||
+      !shareId
+    ) {
+      return;
+    }
+
+    if (
+      hasLoadedShare.current
+    ) {
+      return;
+    }
+
+    hasLoadedShare.current =
+      true;
+
+    const loadShare =
+      async () => {
+        setIsReceiving(true);
+        setReceiveError("");
+
+        try {
+          /*
+           * Encryption key is stored in the
+           * URL fragment.
+           *
+           * Example:
+           *
+           * /share/abc123#key=ABC...
+           *
+           * The fragment is not sent to
+           * the backend.
+           */
+
+          const hash =
+            window.location.hash;
+
+          if (!hash) {
+            throw new Error(
+              "Encryption key is missing from the share link.",
+            );
+          }
+
+          const hashParams =
+            new URLSearchParams(
+              hash.substring(1),
+            );
+
+          const key =
+            hashParams.get("key");
+
+          if (!key) {
+            throw new Error(
+              "Encryption key is missing from the share link.",
+            );
+          }
+
+          /*
+           * Retrieve encrypted data.
+           */
+
+          const share =
+            await getShare(
+              shareId,
+            );
+
+          /*
+           * Decrypt locally.
+           */
+
+          const plaintext =
+            await decryptSecret({
+              ciphertext:
+                share.ciphertext,
+              iv: share.iv,
+              key,
+            });
+
+          setReceivedSecret(
+            plaintext,
+          );
+
+          setReceivedShareInfo({
+            expiresAt:
+              share.expiresAt,
+            maxViews:
+              share.maxViews,
+            views:
+              share.views,
+            riskLevel:
+              share.riskLevel,
+          });
+        } catch (error) {
+          console.error(
+            "Failed to open secure share:",
+            error,
+          );
+
+          if (
+            error instanceof Error
+          ) {
+            setReceiveError(
+              error.message,
+            );
+          } else {
+            setReceiveError(
+              "This secure share could not be opened.",
+            );
+          }
+        } finally {
+          setIsReceiving(false);
+        }
+      };
+
+    loadShare();
+  }, [
+    isSharePage,
+    shareId,
+  ]);
+
+  /*
+   * ---------------------------------------------------------
+   * ANALYZE
+   * ---------------------------------------------------------
+   */
+
+  const handleAnalyze =
+    () => {
+      const detectedSecrets =
+        detectSecrets(
+          secret,
+        );
+
+      const result =
+        analyzeRisk(
+          detectedSecrets,
+        );
+
+      setAnalysis(result);
+
+      /*
+       * Risk-based recommendations.
+       */
+
+      const recommendations = {
+        LOW: {
+          expires: 30,
+          views: 5,
+        },
+
+        MEDIUM: {
+          expires: 15,
+          views: 3,
+        },
+
+        HIGH: {
+          expires: 10,
+          views: 1,
+        },
+
+        CRITICAL: {
+          expires: 5,
+          views: 1,
+        },
+      };
+
+      const recommended =
+        recommendations[
+          result.level
+        ];
+
+      setRecommendedExpiry(
+        recommended.expires,
+      );
+
+      setRecommendedViews(
+        recommended.views,
+      );
+
+      /*
+       * Start with recommended values.
+       */
+
+      setExpiresInMinutes(
+        recommended.expires,
+      );
+
+      setMaxViews(
+        recommended.views,
+      );
+
+      setEncryptedData(null);
+      setShareInfo(null);
+      setEncryptionError("");
+    };
+
+  /*
+   * ---------------------------------------------------------
+   * CREATE SHARE
+   * ---------------------------------------------------------
+   */
+
+  const handleCreateSecureShare =
+    async () => {
+      if (!secret.trim()) {
+        return;
+      }
+
+      setIsEncrypting(true);
+      setEncryptionError("");
+      setEncryptedData(null);
+      setShareInfo(null);
+
+      try {
+        /*
+         * Encrypt locally.
+         */
+
+        const encrypted =
+          await encryptSecret(
+            secret,
+          );
+
+        setEncryptedData(
+          encrypted,
+        );
+
+        /*
+         * Send encrypted data to backend.
+         *
+         * Encryption key is NOT sent.
+         */
+
+        const share =
+          await createShare(
+            encrypted,
+            {
+              expiresInMinutes,
+              maxViews,
+              riskLevel:
+                analysis?.level ??
+                "LOW",
+            },
+          );
+
+        setShareInfo(
+          share,
+        );
+      } catch (error) {
+        console.error(
+          "Secure share creation failed:",
+          error,
+        );
+
+        if (
+          error instanceof Error
+        ) {
+          setEncryptionError(
+            error.message,
+          );
+        } else {
+          setEncryptionError(
+            "Failed to create secure share.",
+          );
+        }
+      } finally {
+        setIsEncrypting(false);
+      }
+    };
+
+  /*
+   * ---------------------------------------------------------
+   * SHARE URL
+   * ---------------------------------------------------------
+   */
+
+  const getShareUrl =
+    () => {
+      if (
+        !shareInfo ||
+        !encryptedData
+      ) {
+        return "";
+      }
+
+      /*
+       * IMPORTANT:
+       *
+       * The key is placed after #.
+       *
+       * Therefore it stays in the browser
+       * and is not sent to the backend.
+       */
+
+      return `${window.location.origin}/share/${shareInfo.id}#key=${encodeURIComponent(
+        encryptedData.key,
+      )}`;
+    };
+
+  /*
+   * ---------------------------------------------------------
+   * COPY LINK
+   * ---------------------------------------------------------
+   */
+
+  const handleCopyLink =
+    async () => {
+      const url =
+        getShareUrl();
+
+      if (!url) {
+        return;
+      }
+
+      try {
+        await navigator.clipboard.writeText(
+          url,
+        );
+
+        alert(
+          "Secure share link copied.",
+        );
+      } catch (error) {
+        console.error(
+          "Failed to copy link:",
+          error,
+        );
+      }
+    };
+
+  /*
+   * ---------------------------------------------------------
+   * OVERRIDE CHECK
+   * ---------------------------------------------------------
+   */
+
+  const isOverridingRecommendation =
+    expiresInMinutes !==
+      recommendedExpiry ||
+    maxViews !==
+      recommendedViews;
+
+  /*
+   * ---------------------------------------------------------
+   * RISK CSS CLASS
+   * ---------------------------------------------------------
+   */
+
+  const getRiskClass =
+    (level: string) => {
+      return `risk-${level.toLowerCase()}`;
+    };
+
+  /*
+   * =========================================================
+   * SHARE PAGE
+   * =========================================================
+   */
+
+  if (isSharePage) {
     return (
       <main className="app">
+
         <div className="container">
 
           <header className="header">
+
             <p className="eyebrow">
               ADAPTIVE SECRET LIFECYCLE
             </p>
 
-            <h1>Secure Share</h1>
+            <h1>
+              Secure Share
+            </h1>
 
             <p className="subtitle">
-              Encrypted information is decrypted locally in your
+              Encrypted information is
+              decrypted locally in your
               browser.
             </p>
+
           </header>
 
           <section className="card result-card">
 
             <div className="card-header">
-              <h2>Secret Received</h2>
+
+              <h2>
+                Secret Received
+              </h2>
 
               <span className="status">
                 SECURE
               </span>
+
             </div>
 
-            {isLoadingShare && (
-              <div className="encryption-success">
-                <div className="success-header">
-                  <span>🔐</span>
-                  <strong>
-                    Opening secure share...
-                  </strong>
-                </div>
+            {isReceiving && (
+              <div className="analysis-section">
 
-                <p>
-                  Retrieving encrypted data and decrypting it
+                <h3>
+                  Opening secure share...
+                </h3>
+
+                <p className="result-placeholder">
+                  Retrieving encrypted
+                  data and decrypting it
                   locally.
                 </p>
+
               </div>
             )}
 
-            {shareError && (
+            {receiveError && (
               <div className="encryption-error">
+
                 <strong>
-                  This secure share could not be opened.
+                  This secure share
+                  could not be opened.
                 </strong>
 
                 <p>
-                  {shareError}
+                  {receiveError}
                 </p>
+
               </div>
             )}
 
-            {receivedSecret && !shareError && (
-              <>
-                <div className="encryption-success">
-                  <div className="success-header">
-                    <span>✓</span>
+            {!isReceiving &&
+              !receiveError &&
+              receivedSecret && (
+                <>
 
-                    <strong>
-                      Secret decrypted locally
-                    </strong>
-                  </div>
+                  <div className="encryption-success">
 
-                  <p>
-                    The server provided encrypted data. The
-                    encryption key remained in this browser.
-                  </p>
-                </div>
+                    <div className="success-header">
 
-                <div className="analysis-section">
-                  <h3>
-                    Decrypted Information
-                    <span className="status">
-                      LOCAL
-                    </span>
-                  </h3>
+                      <span>
+                        ✓
+                      </span>
 
-                  <pre className="decrypted-secret">
-                    {receivedSecret}
-                  </pre>
-                </div>
+                      <strong>
+                        Secret decrypted locally
+                      </strong>
 
-                <div className="share-section">
-                  <div>
-                    <h3>
-                      🔒 Zero-knowledge decryption
-                    </h3>
+                    </div>
 
                     <p>
-                      Decryption happened locally in your
-                      browser. The server never received the
-                      encryption key.
+                      The server provided
+                      encrypted data. The
+                      encryption key remained
+                      in this browser.
                     </p>
-                  </div>
-                </div>
 
-                {shareExpiresAt && (
-                  <div className="share-metadata">
-                    <span>
-                      Expires:{" "}
-                      {new Date(
-                        shareExpiresAt,
-                      ).toLocaleString()}
-                    </span>
-
-                    {shareMaxViews && (
-                      <span>
-                        Maximum views: {shareMaxViews}
-                      </span>
-                    )}
                   </div>
-                )}
-              </>
-            )}
+
+                  <div className="analysis-section">
+
+                    <h3>
+                      Decrypted Information
+                    </h3>
+
+                    <pre className="secret-output">
+                      {receivedSecret}
+                    </pre>
+
+                  </div>
+
+                  <div className="analysis-section">
+
+                    <h3>
+                      🔐 Zero-knowledge
+                      decryption
+                    </h3>
+
+                    <p className="result-placeholder">
+                      Decryption happened
+                      locally in your browser.
+                      The server never received
+                      the encryption key.
+                    </p>
+
+                  </div>
+
+                  {receivedShareInfo && (
+                    <div className="placeholder-grid">
+
+                      <div>
+                        <span>
+                          Views Used
+                        </span>
+
+                        <strong>
+                          {
+                            receivedShareInfo.views
+                          }
+                          /
+                          {
+                            receivedShareInfo.maxViews
+                          }
+                        </strong>
+                      </div>
+
+                      <div>
+                        <span>
+                          Risk Level
+                        </span>
+
+                        <strong>
+                          {
+                            receivedShareInfo.riskLevel
+                          }
+                        </strong>
+                      </div>
+
+                      <div>
+                        <span>
+                          Expires
+                        </span>
+
+                        <strong>
+                          {new Date(
+                            receivedShareInfo.expiresAt,
+                          ).toLocaleTimeString()}
+                        </strong>
+                      </div>
+
+                    </div>
+                  )}
+
+                </>
+              )}
 
           </section>
+
         </div>
+
       </main>
     );
   }
 
   /*
-   * ---------------------------------------------------------
-   * CREATE SECRET VIEW
-   * ---------------------------------------------------------
+   * =========================================================
+   * CREATE PAGE
+   * =========================================================
    */
 
   return (
     <main className="app">
+
       <div className="container">
 
         <header className="header">
+
           <p className="eyebrow">
             ADAPTIVE SECRET LIFECYCLE
           </p>
 
           <h1>
-            Securely share sensitive information.
+            Securely share sensitive
+            information.
           </h1>
 
           <p className="subtitle">
-            Analyze your content, protect it locally, and
-            prepare it for secure sharing.
+            Analyze your content,
+            identify sensitive
+            information, protect it
+            locally, and prepare it
+            for secure sharing.
           </p>
+
         </header>
 
         <section className="card">
 
           <div className="card-header">
-            <h2>Create Secure Secret</h2>
+
+            <h2>
+              Create Secure Secret
+            </h2>
 
             <span className="status">
               LOCAL ANALYSIS
             </span>
+
           </div>
 
           <label htmlFor="secret-input">
@@ -388,13 +881,22 @@ function App() {
             id="secret-input"
             value={secret}
             onChange={(event) => {
-              setSecret(event.target.value);
+
+              setSecret(
+                event.target.value,
+              );
+
               setAnalysis(null);
               setEncryptedData(null);
+              setShareInfo(null);
               setEncryptionError("");
-              setShareUrl(null);
+
             }}
             placeholder={`Example:
+hello my password is 1234
+
+or:
+
 DB_HOST=production.company.com
 DB_USER=admin
 DB_PASSWORD=your-password`}
@@ -402,13 +904,19 @@ DB_PASSWORD=your-password`}
           />
 
           <div className="actions">
+
             <button
               type="button"
-              onClick={handleAnalyze}
-              disabled={!secret.trim()}
+              onClick={
+                handleAnalyze
+              }
+              disabled={
+                !secret.trim()
+              }
             >
               Analyze Secret
             </button>
+
           </div>
 
         </section>
@@ -417,7 +925,10 @@ DB_PASSWORD=your-password`}
           <section className="card result-card">
 
             <div className="card-header">
-              <h2>Security Analysis</h2>
+
+              <h2>
+                Security Analysis
+              </h2>
 
               <span
                 className={`risk-badge ${getRiskClass(
@@ -426,6 +937,7 @@ DB_PASSWORD=your-password`}
               >
                 {analysis.level}
               </span>
+
             </div>
 
             <div className="placeholder-grid">
@@ -436,7 +948,11 @@ DB_PASSWORD=your-password`}
                 </span>
 
                 <strong>
-                  {analysis.detectedSecrets.length}
+                  {
+                    analysis
+                      .detectedSecrets
+                      .length
+                  }
                 </strong>
               </div>
 
@@ -462,55 +978,117 @@ DB_PASSWORD=your-password`}
 
             </div>
 
+            {/* =================================================
+                DETECTED CONTENT
+               ================================================= */}
+
             <div className="analysis-section">
 
               <h3>
                 Detected Content
               </h3>
 
-              {analysis.detectedSecrets.length === 0 ? (
+              {analysis.detectedSecrets
+                .length === 0 ? (
+
                 <p className="result-placeholder">
-                  No obvious sensitive secrets were
-                  detected.
+                  No obvious sensitive
+                  secrets were detected.
                 </p>
+
               ) : (
-                <div className="detected-list">
 
-                  {analysis.detectedSecrets.map(
-                    (secretItem, index) => (
-                      <div
-                        className="detected-item"
-                        key={`${secretItem.type}-${index}`}
-                      >
+                <>
 
-                        <div>
-                          <strong>
-                            {secretItem.label}
-                          </strong>
+                  <div className="detected-preview">
 
-                          <span>
-                            Confidence:{" "}
-                            {Math.round(
-                              secretItem.confidence * 100,
-                            )}
-                            %
+                    <div className="detected-preview-header">
+
+                      <span>
+                        Sensitive content
+                        masked
+                      </span>
+
+                      <span className="status">
+                        LOCAL
+                      </span>
+
+                    </div>
+
+                    <div className="detected-preview-text">
+                      {renderDetectedContent(
+                        secret,
+                        analysis.detectedSecrets,
+                      )}
+                    </div>
+
+                  </div>
+
+                  <div className="detected-list">
+
+                    {analysis.detectedSecrets.map(
+                      (
+                        secretItem,
+                        index,
+                      ) => (
+
+                        <div
+                          className="detected-item"
+                          key={`${secretItem.type}-${index}`}
+                        >
+
+                          <div>
+
+                            <strong>
+                              {
+                                secretItem.label
+                              }
+                            </strong>
+
+                            <span>
+                              Detected:
+                              {" "}
+                              <code>
+                                {
+                                  secretItem.matchedText
+                                }
+                              </code>
+                            </span>
+
+                            <span>
+                              Confidence:
+                              {" "}
+                              {Math.round(
+                                secretItem.confidence *
+                                  100,
+                              )}
+                              %
+                            </span>
+
+                          </div>
+
+                          <span
+                            className={`severity severity-${secretItem.severity}`}
+                          >
+                            {secretItem.severity.toUpperCase()}
                           </span>
+
                         </div>
 
-                        <span
-                          className={`severity severity-${secretItem.severity}`}
-                        >
-                          {secretItem.severity.toUpperCase()}
-                        </span>
+                      ),
+                    )}
 
-                      </div>
-                    ),
-                  )}
+                  </div>
 
-                </div>
+                </>
+
               )}
 
             </div>
+
+            {/* =================================================
+                RECOMMENDATIONS
+               ================================================= */}
 
             <div className="analysis-section">
 
@@ -521,17 +1099,27 @@ DB_PASSWORD=your-password`}
               <div className="recommendations">
 
                 {analysis.recommendations.map(
-                  (recommendation) => (
+                  (
+                    recommendation,
+                  ) => (
+
                     <div
                       className="recommendation"
-                      key={recommendation}
+                      key={
+                        recommendation
+                      }
                     >
-                      <span>✓</span>
+
+                      <span>
+                        ✓
+                      </span>
 
                       <p>
                         {recommendation}
                       </p>
+
                     </div>
+
                   ),
                 )}
 
@@ -539,18 +1127,196 @@ DB_PASSWORD=your-password`}
 
             </div>
 
+            {/* =================================================
+                SHARE CONTROLS
+               ================================================= */}
+
+            <div className="analysis-section">
+
+              <div className="card-header">
+
+                <h3>
+                  Share Controls
+                </h3>
+
+                <span className="status">
+                  USER CONTROL
+                </span>
+
+              </div>
+
+              <p className="result-placeholder">
+                Choose how long this
+                secret should remain
+                available and how many
+                times it can be viewed.
+              </p>
+
+              <div className="share-controls">
+
+                <div className="control-group">
+
+                  <label htmlFor="expiry-select">
+                    Expires after
+                  </label>
+
+                  <select
+                    id="expiry-select"
+                    value={
+                      expiresInMinutes
+                    }
+                    onChange={(event) =>
+                      setExpiresInMinutes(
+                        Number(
+                          event.target.value,
+                        ),
+                      )
+                    }
+                  >
+
+                    <option value={5}>
+                      5 minutes
+                    </option>
+
+                    <option value={10}>
+                      10 minutes
+                    </option>
+
+                    <option value={15}>
+                      15 minutes
+                    </option>
+
+                    <option value={30}>
+                      30 minutes
+                    </option>
+
+                    <option value={60}>
+                      1 hour
+                    </option>
+
+                    <option value={1440}>
+                      24 hours
+                    </option>
+
+                  </select>
+
+                </div>
+
+                <div className="control-group">
+
+                  <label htmlFor="views-select">
+                    Maximum views
+                  </label>
+
+                  <select
+                    id="views-select"
+                    value={
+                      maxViews
+                    }
+                    onChange={(event) =>
+                      setMaxViews(
+                        Number(
+                          event.target.value,
+                        ),
+                      )
+                    }
+                  >
+
+                    <option value={1}>
+                      1 view
+                    </option>
+
+                    <option value={2}>
+                      2 views
+                    </option>
+
+                    <option value={3}>
+                      3 views
+                    </option>
+
+                    <option value={5}>
+                      5 views
+                    </option>
+
+                    <option value={10}>
+                      10 views
+                    </option>
+
+                  </select>
+
+                </div>
+
+              </div>
+
+              <div className="security-note">
+
+                🔐 Recommended for{" "}
+                <strong>
+                  {analysis.level}
+                </strong>
+                :{" "}
+                <strong>
+                  {recommendedExpiry} minutes
+                </strong>
+                {" · "}
+                <strong>
+                  {recommendedViews} view
+                  {recommendedViews !== 1
+                    ? "s"
+                    : ""}
+                </strong>
+
+              </div>
+
+              {isOverridingRecommendation && (
+                <div className="encryption-error">
+
+                  ⚠️ You are overriding
+                  the recommended security
+                  settings.
+
+                  <p>
+                    Your selected settings:
+                    {" "}
+                    <strong>
+                      {
+                        expiresInMinutes
+                      } minutes
+                    </strong>
+                    {" · "}
+                    <strong>
+                      {maxViews} view
+                      {maxViews !== 1
+                        ? "s"
+                        : ""}
+                    </strong>
+                  </p>
+
+                </div>
+              )}
+
+            </div>
+
+            {/* =================================================
+                CREATE SHARE
+               ================================================= */}
+
             <div className="share-section">
 
               <div>
+
                 <h3>
                   Ready to Share?
                 </h3>
 
                 <p>
-                  Your secret will be encrypted locally
-                  before the encrypted data is sent to the
+                  Your secret will be
+                  encrypted locally
+                  before the encrypted
+                  data is sent to the
                   sharing service.
                 </p>
+
               </div>
 
               <button
@@ -559,7 +1325,9 @@ DB_PASSWORD=your-password`}
                 onClick={
                   handleCreateSecureShare
                 }
-                disabled={isEncrypting}
+                disabled={
+                  isEncrypting
+                }
               >
                 {isEncrypting
                   ? "Creating Secure Share..."
@@ -574,22 +1342,29 @@ DB_PASSWORD=your-password`}
               </div>
             )}
 
+            {/* =================================================
+                ENCRYPTION RESULT
+               ================================================= */}
+
             {encryptedData && (
               <div className="encryption-success">
 
                 <div className="success-header">
 
-                  <span>✓</span>
+                  <span>
+                    ✓
+                  </span>
 
                   <strong>
-                    Secret encrypted successfully
+                    Secret encrypted
+                    successfully
                   </strong>
 
                 </div>
 
                 <p>
-                  AES-256-GCM encryption completed
-                  locally.
+                  AES-256-GCM encryption
+                  completed locally.
                 </p>
 
                 <div className="encrypted-preview">
@@ -611,83 +1386,107 @@ DB_PASSWORD=your-password`}
               </div>
             )}
 
-            {shareUrl && (
-              <div className="share-created">
+            {/* =================================================
+                GENERATED SHARE
+               ================================================= */}
 
-                <h2>
-                  Secure Share Created
-                </h2>
+            {shareInfo &&
+              encryptedData && (
+                <div className="analysis-section">
 
-                <p>
-                  Your encrypted secret is ready to
-                  share.
-                </p>
+                  <h2>
+                    Secure Share Created
+                  </h2>
 
-                <div className="share-status">
-                  ACTIVE
-                </div>
+                  <p>
+                    Your encrypted secret
+                    is ready to share.
+                  </p>
 
-                <div className="share-link-row">
+                  <div className="share-created">
 
-                  <input
-                    type="text"
-                    value={shareUrl}
-                    readOnly
-                  />
-
-                  <button
-                    type="button"
-                    onClick={handleCopyLink}
-                  >
-                    Copy Link
-                  </button>
-
-                </div>
-
-                <div className="share-details">
-
-                  <span>
-                    Encryption{" "}
-                    <strong>
-                      AES-256-GCM
-                    </strong>
-                  </span>
-
-                  {shareExpiresAt && (
-                    <span>
-                      Expires{" "}
-                      <strong>
-                        {new Date(
-                          shareExpiresAt,
-                        ).toLocaleString()}
-                      </strong>
+                    <span className="share-status">
+                      ACTIVE
                     </span>
-                  )}
 
-                  {shareMaxViews && (
-                    <span>
-                      Maximum Views{" "}
-                      <strong>
-                        {shareMaxViews}
-                      </strong>
-                    </span>
-                  )}
+                    <div className="share-link-row">
+
+                      <input
+                        type="text"
+                        readOnly
+                        value={
+                          getShareUrl()
+                        }
+                      />
+
+                      <button
+                        type="button"
+                        onClick={
+                          handleCopyLink
+                        }
+                      >
+                        Copy Link
+                      </button>
+
+                    </div>
+
+                    <div className="placeholder-grid">
+
+                      <div>
+                        <span>
+                          Encryption
+                        </span>
+
+                        <strong>
+                          AES-256-GCM
+                        </strong>
+                      </div>
+
+                      <div>
+                        <span>
+                          Expires
+                        </span>
+
+                        <strong>
+                          {expiresInMinutes <
+                          60
+                            ? `${expiresInMinutes} minutes`
+                            : expiresInMinutes ===
+                              60
+                            ? "1 hour"
+                            : "24 hours"}
+                        </strong>
+                      </div>
+
+                      <div>
+                        <span>
+                          Maximum Views
+                        </span>
+
+                        <strong>
+                          {maxViews}
+                        </strong>
+                      </div>
+
+                    </div>
+
+                    <p className="security-note">
+                      🔐 The encryption key
+                      is kept in the URL
+                      fragment and is not
+                      sent to the backend.
+                    </p>
+
+                  </div>
 
                 </div>
-
-                <p className="key-warning">
-                  🔒 The encryption key is kept in
-                  the URL fragment and is not sent to
-                  the backend.
-                </p>
-
-              </div>
-            )}
+              )}
 
           </section>
         )}
 
       </div>
+
     </main>
   );
 }
