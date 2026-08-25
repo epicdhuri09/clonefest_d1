@@ -15,6 +15,15 @@ import {
 import type { RiskAnalysis } from "./services/riskEngine";
 import type { DetectedSecret } from "./services/secretDetector";
 
+import {
+  getCurrentUser,
+  login,
+  logout,
+  register,
+} from "./services/auth";
+
+import type { AuthUser } from "./services/auth";
+
 type EncryptedData = {
   ciphertext: string;
   iv: string;
@@ -170,6 +179,105 @@ function App() {
   const shareId = isSharePage
     ? path.split("/share/")[1]
     : null;
+
+  /*
+   * ---------------------------------------------------------
+   * AUTHENTICATION
+   * ---------------------------------------------------------
+   */
+
+  const [authUser, setAuthUser] =
+    useState<AuthUser | null>(null);
+
+  const [authLoading, setAuthLoading] =
+    useState(true);
+
+  const [authMode, setAuthMode] =
+    useState<"login" | "register">("login");
+
+  const [authUsername, setAuthUsername] =
+    useState("");
+
+  const [authPassword, setAuthPassword] =
+    useState("");
+
+  const [authError, setAuthError] =
+    useState("");
+
+  const [authBusy, setAuthBusy] =
+    useState(false);
+
+  useEffect(() => {
+    if (isSharePage) {
+      setAuthLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    const restoreSession = async () => {
+      try {
+        const user = await getCurrentUser();
+
+        if (!cancelled) {
+          setAuthUser(user);
+        }
+      } finally {
+        if (!cancelled) {
+          setAuthLoading(false);
+        }
+      }
+    };
+
+    restoreSession();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isSharePage]);
+
+  const handleAuthSubmit = async () => {
+    const username = authUsername.trim();
+
+    if (!username || !authPassword) {
+      setAuthError(
+        "Username and password are required.",
+      );
+      return;
+    }
+
+    setAuthBusy(true);
+    setAuthError("");
+
+    try {
+      const result =
+        authMode === "login"
+          ? await login(username, authPassword)
+          : await register(username, authPassword);
+
+      setAuthUser(result.user);
+      setAuthUsername("");
+      setAuthPassword("");
+    } catch (error) {
+      setAuthError(
+        error instanceof Error
+          ? error.message
+          : "Authentication failed.",
+      );
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    await logout();
+
+    setAuthUser(null);
+    setAuthMode("login");
+    setAuthUsername("");
+    setAuthPassword("");
+    setAuthError("");
+  };
 
   /*
    * ---------------------------------------------------------
@@ -743,6 +851,181 @@ function App() {
       `risk-${level.toLowerCase()}`;
 
   /*
+   * ---------------------------------------------------------
+   * AUTH GATE
+   *
+   * Share recipients bypass this gate.
+   * Only users creating/managing shares need an account.
+   * ---------------------------------------------------------
+   */
+
+  if (!isSharePage && authLoading) {
+    return (
+      <main className="app">
+        <div className="container">
+          <header className="header">
+            <p className="eyebrow">
+              ADAPTIVE SECRET LIFECYCLE
+            </p>
+            <h1>
+              Securely share sensitive information.
+            </h1>
+            <p className="subtitle">
+              Checking your secure session...
+            </p>
+          </header>
+        </div>
+      </main>
+    );
+  }
+
+  if (!isSharePage && !authUser) {
+    return (
+      <main className="app">
+        <div className="container">
+          <header className="header">
+            <p className="eyebrow">
+              ADAPTIVE SECRET LIFECYCLE
+            </p>
+
+            <h1>
+              Securely share sensitive information.
+            </h1>
+
+            <p className="subtitle">
+              Sign in to create and manage secure secret shares.
+              Recipients do not need an account to open a share link.
+            </p>
+          </header>
+
+          <section className="card">
+            <div className="card-header">
+              <h2>
+                {authMode === "login"
+                  ? "Welcome Back"
+                  : "Create Account"}
+              </h2>
+
+              <span className="status">
+                {authMode === "login"
+                  ? "LOGIN"
+                  : "REGISTER"}
+              </span>
+            </div>
+
+            <label htmlFor="auth-username">
+              Username
+            </label>
+
+            <input
+              id="auth-username"
+              type="text"
+              value={authUsername}
+              onChange={(event) => {
+                setAuthUsername(event.target.value);
+                setAuthError("");
+              }}
+              autoComplete="username"
+              disabled={authBusy}
+            />
+
+            <label
+              htmlFor="auth-password"
+              style={{ marginTop: "16px" }}
+            >
+              Password
+            </label>
+
+            <input
+              id="auth-password"
+              type="password"
+              value={authPassword}
+              onChange={(event) => {
+                setAuthPassword(event.target.value);
+                setAuthError("");
+              }}
+              autoComplete={
+                authMode === "login"
+                  ? "current-password"
+                  : "new-password"
+              }
+              disabled={authBusy}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  void handleAuthSubmit();
+                }
+              }}
+            />
+
+            {authError && (
+              <div
+                className="encryption-error"
+                style={{ marginTop: "16px" }}
+              >
+                {authError}
+              </div>
+            )}
+
+            <div
+              className="actions"
+              style={{ justifyContent: "flex-end", marginTop: "20px" }}
+            >
+              <button
+                type="button"
+                onClick={() => void handleAuthSubmit()}
+                disabled={authBusy}
+              >
+                {authBusy
+                  ? authMode === "login"
+                    ? "Logging in..."
+                    : "Creating Account..."
+                  : authMode === "login"
+                    ? "Login"
+                    : "Register"}
+              </button>
+            </div>
+
+            <div
+              className="security-note"
+              style={{ marginTop: "16px" }}
+            >
+              {authMode === "login"
+                ? "Don't have an account?"
+                : "Already have an account?"}{" "}
+
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthMode(
+                    authMode === "login"
+                      ? "register"
+                      : "login",
+                  );
+                  setAuthError("");
+                }}
+                style={{
+                  background: "none",
+                  border: "none",
+                  padding: 0,
+                  margin: 0,
+                  color: "#7dd3fc",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  fontSize: "inherit",
+                }}
+              >
+                {authMode === "login"
+                  ? "Register"
+                  : "Login"}
+              </button>
+            </div>
+          </section>
+        </div>
+      </main>
+    );
+  }
+
+  /*
    * =========================================================
    * SHARE PAGE
    * =========================================================
@@ -955,6 +1238,39 @@ function App() {
             locally, and prepare it
             for secure sharing.
           </p>
+
+          {authUser && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: "12px",
+                marginTop: "20px",
+                flexWrap: "wrap",
+              }}
+            >
+              <span className="security-note">
+                Signed in as <strong>{authUser.username}</strong>
+              </span>
+
+              <button
+                type="button"
+                onClick={() => void handleLogout()}
+                style={{
+                  padding: "10px 18px",
+                  borderRadius: "8px",
+                  border: "1px solid #334155",
+                  background: "#111827",
+                  color: "#f8fafc",
+                  cursor: "pointer",
+                  fontWeight: 700,
+                }}
+              >
+                Logout
+              </button>
+            </div>
+          )}
 
         </header>
 

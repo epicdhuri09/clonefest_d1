@@ -1,6 +1,8 @@
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+const API_BASE = "http://localhost:4000";
+
 export interface EncryptedSecret {
   ciphertext: string;
   iv: string;
@@ -36,6 +38,15 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
   return bytes.buffer;
 }
 
+function getAuthHeaders(): Record<string, string> {
+  const token = localStorage.getItem("authToken");
+
+  return token
+    ? { Authorization: `Bearer ${token}` }
+    : {};
+}
+
+/** Encrypt locally using AES-256-GCM. */
 export async function encryptSecret(
   secret: string,
 ): Promise<EncryptedSecret> {
@@ -48,9 +59,7 @@ export async function encryptSecret(
     ["encrypt", "decrypt"],
   );
 
-  const iv = crypto.getRandomValues(
-    new Uint8Array(12),
-  );
+  const iv = crypto.getRandomValues(new Uint8Array(12));
 
   const encrypted = await crypto.subtle.encrypt(
     {
@@ -61,10 +70,7 @@ export async function encryptSecret(
     encoder.encode(secret),
   );
 
-  const rawKey = await crypto.subtle.exportKey(
-    "raw",
-    key,
-  );
+  const rawKey = await crypto.subtle.exportKey("raw", key);
 
   return {
     ciphertext: arrayBufferToBase64(encrypted),
@@ -73,12 +79,7 @@ export async function encryptSecret(
   };
 }
 
-/**
- * Create a share.
- *
- * The frontend works in minutes; the backend expects seconds.
- * The encryption key is never sent to the backend.
- */
+/** Create an authenticated secure share. */
 export async function createShare(
   encryptedSecret: EncryptedSecret,
   options?: {
@@ -89,53 +90,46 @@ export async function createShare(
 ): Promise<ShareResponse> {
   const expiresInMinutes = options?.expiresInMinutes ?? 10;
 
-  if (!Number.isFinite(expiresInMinutes) || expiresInMinutes <= 0) {
-    throw new Error("Expiration time must be greater than 0.");
-  }
-
-  const expiresInSeconds = Math.round(expiresInMinutes * 60);
-
-  const response = await fetch(
-    "http://localhost:4000/api/shares",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        ciphertext: encryptedSecret.ciphertext,
-        iv: encryptedSecret.iv,
-        expiresInSeconds,
-        maxViews: options?.maxViews ?? 1,
-        riskLevel: options?.riskLevel ?? "LOW",
-      }),
+  const response = await fetch(`${API_BASE}/api/shares`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...getAuthHeaders(),
     },
-  );
+    body: JSON.stringify({
+      ciphertext: encryptedSecret.ciphertext,
+      iv: encryptedSecret.iv,
+      expiresInSeconds: Math.round(expiresInMinutes * 60),
+      maxViews: options?.maxViews ?? 1,
+      riskLevel: options?.riskLevel ?? "LOW",
+    }),
+  });
 
   if (!response.ok) {
-    let errorMessage = "Failed to create secure share.";
-
-    try {
-      const errorData = await response.json();
-      if (errorData?.error) {
-        errorMessage = errorData.error;
-      }
-    } catch {
-      // Keep default error.
-    }
-
-    throw new Error(errorMessage);
+    throw new Error(
+      await parseResponseError(
+        response,
+        "Failed to create secure share.",
+      ),
+    );
   }
 
-  const data = await response.json();
-
-  if (!data?.id || !data?.expiresAt || !data?.burnToken) {
-    throw new Error("Backend returned an incomplete share response.");
-  }
-
-  return data;
+  return response.json();
 }
 
+async function parseResponseError(
+  response: Response,
+  fallback: string,
+): Promise<string> {
+  try {
+    const data = await response.json();
+    return data?.error || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+/** Retrieve an encrypted share. Recipient authentication is not required. */
 export async function getShare(
   shareId: string,
 ): Promise<{
@@ -148,91 +142,71 @@ export async function getShare(
   riskLevel: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 }> {
   const response = await fetch(
-    `http://localhost:4000/api/shares/${encodeURIComponent(shareId)}`,
+    `${API_BASE}/api/shares/${encodeURIComponent(shareId)}`,
   );
 
   if (!response.ok) {
-    let errorMessage = "Failed to retrieve secure share.";
-
-    try {
-      const errorData = await response.json();
-      if (errorData?.error) {
-        errorMessage = errorData.error;
-      }
-    } catch {
-      // Keep default error.
-    }
-
-    throw new Error(errorMessage);
+    throw new Error(
+      await parseResponseError(
+        response,
+        "Failed to retrieve secure share.",
+      ),
+    );
   }
 
   return response.json();
 }
 
-/**
- * Creator-only kill switch.
- * The burnToken is never included in the recipient URL.
- */
+/** Permanently revoke a share owned by the logged-in user. */
 export async function burnShare(
   shareId: string,
-  burnToken: string,
+  burnToken?: string,
 ): Promise<{
   id: string;
   status: string;
   message: string;
 }> {
-  if (!burnToken) {
-    throw new Error("Kill switch authorization is missing.");
-  }
-
   const response = await fetch(
-    `http://localhost:4000/api/shares/${encodeURIComponent(shareId)}/burn`,
+    `${API_BASE}/api/shares/${encodeURIComponent(shareId)}/burn`,
     {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        ...getAuthHeaders(),
       },
-      body: JSON.stringify({
-        burnToken,
-      }),
+      body: JSON.stringify(
+        burnToken ? { burnToken } : {},
+      ),
     },
   );
 
   if (!response.ok) {
-    let errorMessage = "Failed to revoke secure share.";
-
-    try {
-      const errorData = await response.json();
-      if (errorData?.error) {
-        errorMessage = errorData.error;
-      }
-    } catch {
-      // Keep default error.
-    }
-
-    throw new Error(errorMessage);
+    throw new Error(
+      await parseResponseError(
+        response,
+        "Failed to revoke secure share.",
+      ),
+    );
   }
 
   return response.json();
 }
 
-export async function revokeShare(
-  shareId: string,
-  burnToken: string,
-): Promise<{
-  id: string;
-  status: string;
-  message: string;
-}> {
-  return burnShare(shareId, burnToken);
-}
-
+/** Decrypt locally in the browser. */
 export async function decryptSecret(
   encryptedSecret: EncryptedSecret,
 ): Promise<string> {
-  const keyData = base64ToArrayBuffer(encryptedSecret.key);
-  const iv = base64ToArrayBuffer(encryptedSecret.iv);
-  const ciphertext = base64ToArrayBuffer(encryptedSecret.ciphertext);
+  const keyData = base64ToArrayBuffer(
+    encryptedSecret.key,
+  );
+
+  const iv = base64ToArrayBuffer(
+    encryptedSecret.iv,
+  );
+
+  const ciphertext = base64ToArrayBuffer(
+    encryptedSecret.ciphertext,
+  );
 
   const key = await crypto.subtle.importKey(
     "raw",
